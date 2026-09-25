@@ -1,23 +1,54 @@
 import { Redis, type RedisOptions } from "ioredis";
 
-const baseOptions = {
+export type RedisConnectionPurpose = "general" | "bullmq";
+
+const commonOptions = {
   enableReadyCheck: true,
-  maxRetriesPerRequest: null,
   connectTimeout: 10_000,
-  commandTimeout: 10_000,
-  retryStrategy: (attempt) => Math.min(attempt * 200, 5_000),
 } satisfies RedisOptions;
 
-export function createRedisConnection(redisUrl: string): Redis {
-  return new Redis(redisUrl, baseOptions);
+const retryStrategy = (attempt: number): number | null =>
+  attempt <= 12 ? Math.min(attempt * 250, 5_000) : null;
+
+export function redisConnectionOptions(
+  purpose: RedisConnectionPurpose,
+): RedisOptions {
+  return {
+    ...commonOptions,
+    lazyConnect: true,
+    keepAlive: 10_000,
+    retryStrategy,
+    ...(purpose === "bullmq"
+      ? { maxRetriesPerRequest: null }
+      : { maxRetriesPerRequest: 3, commandTimeout: 10_000 }),
+  };
 }
 
-export async function checkRedis(redis: Redis): Promise<{ status: "up" | "down"; latencyMs: number }> {
+export function createRedisConnection(
+  redisUrl: string,
+  purpose: RedisConnectionPurpose = "general",
+): Redis {
+  const redis = new Redis(
+    redisUrl,
+    redisConnectionOptions(purpose) as RedisOptions & {
+      replyMapping?: "legacy";
+    },
+  );
+  redis.on("error", () => undefined);
+  return redis;
+}
+
+export async function checkRedis(
+  redis: Redis,
+): Promise<{ status: "up" | "down"; latencyMs: number }> {
   const started = performance.now();
   try {
     await redis.ping();
     return { status: "up", latencyMs: Math.round(performance.now() - started) };
   } catch {
-    return { status: "down", latencyMs: Math.round(performance.now() - started) };
+    return {
+      status: "down",
+      latencyMs: Math.round(performance.now() - started),
+    };
   }
 }

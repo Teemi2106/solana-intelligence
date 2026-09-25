@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
+    "start": "node --import tsx dist/main.js",
     "typecheck": "tsc -b",
     "build": "tsc -b"
   },
@@ -19,10 +19,10 @@
     "bullmq": "latest",
     "@swi/market-data": "*",
     "decimal.js": "10.6.0",
-    "@swi/ingestion": "*"
+    "@swi/ingestion": "*",
+    "tsx": "latest"
   },
   "devDependencies": {
-    "tsx": "latest",
     "typescript": "latest"
   }
 }
