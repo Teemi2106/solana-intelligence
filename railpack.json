@@ -19,9 +19,7 @@
           "step": "install"
         }
       ],
-      "commands": [
-        "npm run build"
-      ]
+      "commands": ["npm run build"]
     }
   },
   "deploy": {
