@@ -5,7 +5,15 @@
     "node": "22"
   },
   "steps": {
+    "source": {
+      "inputs": ["."]
+    },
     "install": {
+      "inputs": [
+        {
+          "step": "source"
+        }
+      ],
       "commands": [
         "npm i -g corepack@latest",
         "corepack enable",
