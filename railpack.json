@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "packages": {
+    "node": "22"
+  },
+  "steps": {
+    "install": {
+      "commands": [
+        "npm i -g corepack@latest",
+        "corepack enable",
+        "corepack prepare npm@11.6.0 --activate",
+        "npm ci"
+      ]
+    },
+    "build": {
+      "inputs": [
+        {
+          "step": "install"
+        }
+      ],
+      "commands": [
+        "npm run build"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "npm run start --workspace @swi/worker"
+  }
+}
