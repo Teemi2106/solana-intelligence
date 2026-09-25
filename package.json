@@ -8,7 +8,10 @@
     "node": ">=22.0.0",
     "npm": ">=11.0.0"
   },
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev:web": "node scripts/run-with-env.mjs web",
