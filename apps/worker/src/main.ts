@@ -30,7 +30,7 @@ import {
   walletRecomputeJob,
 } from "@swi/queue";
 import { startHealthServer } from "./health-server.js";
-import { recordJobFailure, withTimeout } from "./job-support.js";
+import { recordJobFailure, redisCommandName, withTimeout } from "./job-support.js";
 import {
   handleFinalityCheck,
   handleGapBackfill,
@@ -137,30 +137,26 @@ const observe = (
   });
 };
 
-const redisCommandName = (error: unknown): string => {
-  if (typeof error !== "object" || error === null || !("command" in error))
-    return "unknown";
-  const command = error.command;
-  if (
-    typeof command !== "object" ||
-    command === null ||
-    !("name" in command) ||
-    typeof command.name !== "string"
-  )
-    return "unknown";
-  return command.name;
-};
-
 const observeWorkerRedisErrors = (worker: Worker, queue: string): void => {
   worker.on("error", (error) => {
     const command = redisCommandName(error);
     metrics.increment("redis_errors_total", { command, queue });
     logger.error(
-      { queue, command, ...errorDetails(error) },
+      { purpose: "bullmq", queue, command, ...errorDetails(error) },
       "worker Redis error",
     );
   });
 };
+
+const jobFailureDetails = (job: { id?: string; name: string; attemptsMade: number; opts: { attempts?: number }; processedOn?: number } | undefined, error: unknown) => ({
+  purpose: "bullmq",
+  command: redisCommandName(error),
+  jobId: job?.id,
+  jobName: job?.name,
+  attemptsMade: job?.attemptsMade,
+  maxAttempts: job?.opts.attempts,
+  elapsedMs: job?.processedOn ? Date.now() - job.processedOn : undefined,
+});
 
 // ---- analysis: always on (historical ingestion and accounting keep working with live ingestion disabled) ----------------
 const analysisWorker = new Worker(
@@ -239,7 +235,7 @@ const analysisWorker = new Worker(
 observeWorkerRedisErrors(analysisWorker, queueNames.analysis);
 analysisWorker.on("failed", (job, error) => {
   logger.error(
-    { ...errorDetails(error), jobId: job?.id, attempts: job?.attemptsMade },
+      { ...jobFailureDetails(job, error), ...errorDetails(error) },
     "analysis job failed",
   );
   metrics.increment("jobs_failed_total", { queue: queueNames.analysis });
@@ -294,7 +290,7 @@ if (liveEnabled) {
   observeWorkerRedisErrors(ingestionWorker, queueNames.transactionIngestion);
   ingestionWorker.on("failed", (job, error) => {
     logger.error(
-      { ...errorDetails(error), jobId: job?.id, attempts: job?.attemptsMade },
+      { ...jobFailureDetails(job, error), ...errorDetails(error) },
       "ingestion job failed",
     );
     metrics.increment("jobs_failed_total", {
@@ -375,7 +371,7 @@ if (liveEnabled) {
   observeWorkerRedisErrors(maintenanceWorker, queueNames.liveMaintenance);
   maintenanceWorker.on("failed", (job, error) => {
     logger.error(
-      { ...errorDetails(error), jobId: job?.id, attempts: job?.attemptsMade },
+      { ...jobFailureDetails(job, error), ...errorDetails(error) },
       "maintenance job failed",
     );
     metrics.increment("jobs_failed_total", {

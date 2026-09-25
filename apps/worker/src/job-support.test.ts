@@ -2,7 +2,7 @@ import type { Job } from "bullmq";
 import { afterAll, describe, expect, it } from "vitest";
 import { schema } from "@swi/db";
 import { createTestDatabase, requireDatabase } from "@swi/db/testing";
-import { JobTimeoutError, recordJobFailure, withTimeout } from "./job-support.js";
+import { JobTimeoutError, recordJobFailure, redisCommandName, withTimeout } from "./job-support.js";
 
 const context = await createTestDatabase();
 afterAll(async () => context?.dispose());
@@ -17,6 +17,14 @@ describe("withTimeout", () => {
   });
   it("propagates the work's own failure", async () => {
     await expect(withTimeout(Promise.reject(new Error("boom")), 100, "X")).rejects.toThrow("boom");
+  });
+});
+
+describe("Redis failure metadata", () => {
+  it("extracts only the command name from a BullMQ timeout", () => {
+    const error = Object.assign(new Error("Command timed out"), { command: { name: "EVALSHA", args: ["sensitive-payload"] } });
+    expect(redisCommandName(error)).toBe("EVALSHA");
+    expect(redisCommandName(new Error("other failure"))).toBe("unknown");
   });
 });
 

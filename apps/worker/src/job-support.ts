@@ -10,6 +10,13 @@ export class JobTimeoutError extends Error {
   }
 }
 
+export function redisCommandName(error: unknown): string {
+  if (typeof error !== "object" || error === null || !("command" in error)) return "unknown";
+  const command = error.command;
+  if (typeof command !== "object" || command === null || !("name" in command) || typeof command.name !== "string") return "unknown";
+  return command.name;
+}
+
 /** Bounds a job's wall time. Provider adapters also carry their own request timeouts; this is the outer guard. */
 export async function withTimeout<T>(work: Promise<T>, milliseconds: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;

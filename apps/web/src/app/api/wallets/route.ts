@@ -27,7 +27,7 @@ export async function POST(request: Request): Promise<Response> {
   const wallet = await createTrackedWallet(getDatabase(), { address: parsed.data.address, labels: parsed.data.labels, ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}), actorId: user.subject, requestId });
   const run = await startWalletIngestion(getDatabase(), wallet.id, `initial:${wallet.id}`);
   if (run) {
-    const redis = createRedisConnection(getServerConfig().REDIS_URL);
+    const redis = createRedisConnection(getServerConfig().REDIS_URL, "bullmq");
     const queues = createQueues(redis);
     try {
       await queues.analysis.add("wallet-history", { walletId: wallet.id, runId: run.id, correlationId: requestId }, { jobId: `wallet-history-${run.id}` });

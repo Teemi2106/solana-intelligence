@@ -7,6 +7,7 @@ import { getServerConfig } from "./server-config";
 
 interface LiveRuntime {
   readonly redis: Redis;
+  readonly queueRedis: Redis;
   readonly queues: AppQueues;
   readonly metrics: MetricsRegistry;
   readonly limiter: RateLimiter;
@@ -28,11 +29,13 @@ export async function withDeadline<T>(work: Promise<T>, milliseconds: number): P
 export function getLiveRuntime(): LiveRuntime {
   if (!globalRuntime.__swiLive) {
     const config = getServerConfig();
-    const redis = createRedisConnection(config.REDIS_URL);
+    const redis = createRedisConnection(config.REDIS_URL, "general");
+    const queueRedis = createRedisConnection(config.REDIS_URL, "bullmq");
     redis.on("error", () => undefined);
     globalRuntime.__swiLive = {
       redis,
-      queues: createQueues(redis),
+      queueRedis,
+      queues: createQueues(queueRedis),
       metrics: new MetricsRegistry(),
       logger: createLogger({ service: "web-webhook", level: config.LOG_LEVEL }),
       limiter: {
