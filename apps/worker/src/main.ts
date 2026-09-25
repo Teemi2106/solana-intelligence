@@ -30,7 +30,11 @@ import {
   walletRecomputeJob,
 } from "@swi/queue";
 import { startHealthServer } from "./health-server.js";
-import { recordJobFailure, redisCommandName, withTimeout } from "./job-support.js";
+import {
+  recordJobFailure,
+  redisCommandName,
+  withTimeout,
+} from "./job-support.js";
 import {
   handleFinalityCheck,
   handleGapBackfill,
@@ -148,7 +152,18 @@ const observeWorkerRedisErrors = (worker: Worker, queue: string): void => {
   });
 };
 
-const jobFailureDetails = (job: { id?: string; name: string; attemptsMade: number; opts: { attempts?: number }; processedOn?: number } | undefined, error: unknown) => ({
+const jobFailureDetails = (
+  job:
+    | {
+        id?: string;
+        name: string;
+        attemptsMade: number;
+        opts: { attempts?: number };
+        processedOn?: number;
+      }
+    | undefined,
+  error: unknown,
+) => ({
   purpose: "bullmq",
   command: redisCommandName(error),
   jobId: job?.id,
@@ -235,7 +250,7 @@ const analysisWorker = new Worker(
 observeWorkerRedisErrors(analysisWorker, queueNames.analysis);
 analysisWorker.on("failed", (job, error) => {
   logger.error(
-      { ...jobFailureDetails(job, error), ...errorDetails(error) },
+    { ...jobFailureDetails(job, error), ...errorDetails(error) },
     "analysis job failed",
   );
   metrics.increment("jobs_failed_total", { queue: queueNames.analysis });
