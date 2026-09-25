@@ -6,18 +6,6 @@
   },
   "steps": {
     "install": {
-      "inputs": [
-        {
-          "local": true,
-          "include": [
-            "package.json",
-            "package-lock.json",
-            ".npmrc",
-            "apps/*/package.json",
-            "packages/*/package.json"
-          ]
-        }
-      ],
       "commands": [
         "npm i -g corepack@latest",
         "corepack enable",
