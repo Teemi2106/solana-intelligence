@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "tsc -b",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc -b"
