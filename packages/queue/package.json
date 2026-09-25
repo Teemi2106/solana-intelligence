@@ -1,0 +1,10 @@
+{
+  "name": "@swi/queue",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": { "typecheck": "tsc -b", "build": "tsc -b" },
+  "dependencies": { "bullmq": "latest", "ioredis": "latest", "zod": "latest" },
+  "devDependencies": { "typescript": "latest" }
+}

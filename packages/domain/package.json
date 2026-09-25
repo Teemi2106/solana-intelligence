@@ -1,0 +1,10 @@
+{
+  "name": "@swi/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": { "typecheck": "tsc -b", "build": "tsc -b" },
+  "dependencies": { "decimal.js": "10.6.0" },
+  "devDependencies": { "typescript": "latest" }
+}

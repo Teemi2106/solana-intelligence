@@ -1,0 +1,17 @@
+{
+  "name": "@swi/ingestion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": { "typecheck": "tsc -b", "build": "tsc -b" },
+  "dependencies": {
+    "@swi/blockchain": "*",
+    "@swi/db": "*",
+    "@swi/domain": "*",
+    "@swi/observability": "*",
+    "drizzle-orm": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": { "typescript": "latest", "vitest": "latest" }
+}

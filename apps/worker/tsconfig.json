@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "references": [
+    {
+      "path": "../../packages/blockchain"
+    },
+    {
+      "path": "../../packages/config"
+    },
+    {
+      "path": "../../packages/db"
+    },
+    {
+      "path": "../../packages/ingestion"
+    },
+    {
+      "path": "../../packages/market-data"
+    },
+    {
+      "path": "../../packages/observability"
+    },
+    {
+      "path": "../../packages/queue"
+    },
+    {
+      "path": "../../packages/domain"
+    }
+  ],
+  "include": [
+    "src/**/*.ts"
+  ]
+}

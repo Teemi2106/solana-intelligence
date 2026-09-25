@@ -1,0 +1,38 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/config"
+    },
+    {
+      "path": "packages/domain"
+    },
+    {
+      "path": "packages/blockchain"
+    },
+    {
+      "path": "packages/ingestion"
+    },
+    {
+      "path": "packages/market-data"
+    },
+    {
+      "path": "packages/validation"
+    },
+    {
+      "path": "packages/observability"
+    },
+    {
+      "path": "packages/db"
+    },
+    {
+      "path": "packages/queue"
+    },
+    {
+      "path": "apps/worker"
+    },
+    {
+      "path": "apps/web"
+    }
+  ]
+}

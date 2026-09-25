@@ -1,0 +1,28 @@
+{
+  "name": "@swi/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -b",
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@swi/config": "*",
+    "@swi/blockchain": "*",
+    "@swi/db": "*",
+    "@swi/domain": "*",
+    "@swi/observability": "*",
+    "@swi/queue": "*",
+    "bullmq": "latest",
+    "@swi/market-data": "*",
+    "decimal.js": "10.6.0",
+    "@swi/ingestion": "*"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

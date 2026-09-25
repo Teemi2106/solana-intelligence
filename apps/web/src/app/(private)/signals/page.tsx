@@ -1,0 +1,1 @@
+export default function SignalsPage() { return <section><h1 className="text-2xl font-semibold">Signals</h1><p className="mt-2 text-sm text-[var(--muted)]">Explainable signal analysis arrives in Phase 5.</p></section>; }

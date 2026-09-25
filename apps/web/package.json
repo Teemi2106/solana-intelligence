@@ -1,0 +1,35 @@
+{
+  "name": "@swi/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "latest",
+    "@swi/config": "*",
+    "@swi/db": "*",
+    "@swi/queue": "*",
+    "@swi/validation": "*",
+    "jose": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "zod": "latest",
+    "@swi/ingestion": "*",
+    "@swi/blockchain": "*",
+    "@swi/observability": "*",
+    "@swi/domain": "*"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "tailwindcss": "latest",
+    "@tailwindcss/postcss": "latest",
+    "typescript": "latest"
+  }
+}

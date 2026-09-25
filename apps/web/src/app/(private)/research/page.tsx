@@ -1,0 +1,1 @@
+export default function ResearchPage() { return <section><h1 className="text-2xl font-semibold">Research</h1><p className="mt-2 text-sm text-[var(--muted)]">Anti-lookahead outcome comparisons arrive in Phase 7.</p></section>; }

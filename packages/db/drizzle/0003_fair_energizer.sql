@@ -1,0 +1,2 @@
+CREATE TYPE "public"."pricing_status" AS ENUM('MISSING_PRICE', 'PRICED');--> statement-breakpoint
+ALTER TABLE "wallet_trades" ADD COLUMN "pricing_status" "pricing_status" DEFAULT 'MISSING_PRICE' NOT NULL;

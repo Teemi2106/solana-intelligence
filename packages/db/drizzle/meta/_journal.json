@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790319453065,
+      "tag": "0000_fat_psynapse",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790330241441,
+      "tag": "0001_kind_talkback",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790330327331,
+      "tag": "0002_furry_maximus",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790332309948,
+      "tag": "0003_fair_energizer",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790333552903,
+      "tag": "0004_blushing_hannibal_king",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790335305816,
+      "tag": "0005_common_bushwacker",
+      "breakpoints": true
+    }
+  ]
+}
