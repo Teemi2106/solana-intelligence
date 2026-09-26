@@ -7,7 +7,7 @@
   "devEngines": {
     "packageManager": {
       "name": "npm",
-      "version": "11.6.0",
+      "version": ">=11.6.0 <12",
       "onFail": "error"
     }
   },
