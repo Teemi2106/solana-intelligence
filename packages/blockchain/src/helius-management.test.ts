@@ -195,33 +195,48 @@ describe("HeliusWebhookManager", () => {
   it.each([
     ["create", "POST", undefined],
     ["update", "PUT", "wh_1"],
-  ] as const)("serializes the documented Helius JSON at the HTTP boundary for %s", async (_operation, method, id) => {
-    const bodies: string[] = [];
-    const request = vi.fn<typeof fetch>((_input, init) => {
-      if (init?.method === "POST" || init?.method === "PUT") {
-        if (typeof init.body !== "string") throw new Error("expected serialized JSON body");
-        bodies.push(init.body);
-      }
-      const response = id
-        ? existing(["A"], { accountAddresses: ["BOUNDARY"] })
-        : existing(["BOUNDARY"]);
-      return Promise.resolve(new Response(JSON.stringify(response), { status: 200 }));
-    });
-    const m = manager(request);
-    if (method === "POST") await m.createSubscription(["BOUNDARY"]);
-    else await m.replaceAddresses(id, ["BOUNDARY"]);
-    const outbound = JSON.parse(defined(bodies[0])) as Record<string, unknown>;
-    expect(Object.keys(outbound).sort()).toEqual([
-      "accountAddresses", "authHeader", "transactionTypes", "webhookType", "webhookURL",
-    ]);
-    expect(outbound).toMatchObject({
-      webhookURL: URL_OURS,
-      webhookType: "enhanced",
-      accountAddresses: ["BOUNDARY"],
-      transactionTypes: [...HELIUS_WEBHOOK_TRANSACTION_TYPES],
-    });
-    expect((outbound["transactionTypes"] as string[]).length).toBeGreaterThan(0);
-  });
+  ] as const)(
+    "serializes the documented Helius JSON at the HTTP boundary for %s",
+    async (_operation, method, id) => {
+      const bodies: string[] = [];
+      const request = vi.fn<typeof fetch>((_input, init) => {
+        if (init?.method === "POST" || init?.method === "PUT") {
+          if (typeof init.body !== "string")
+            throw new Error("expected serialized JSON body");
+          bodies.push(init.body);
+        }
+        const response = id
+          ? existing(["A"], { accountAddresses: ["BOUNDARY"] })
+          : existing(["BOUNDARY"]);
+        return Promise.resolve(
+          new Response(JSON.stringify(response), { status: 200 }),
+        );
+      });
+      const m = manager(request);
+      if (method === "POST") await m.createSubscription(["BOUNDARY"]);
+      else await m.replaceAddresses(id, ["BOUNDARY"]);
+      const outbound = JSON.parse(defined(bodies[0])) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(outbound).sort()).toEqual([
+        "accountAddresses",
+        "authHeader",
+        "transactionTypes",
+        "webhookType",
+        "webhookURL",
+      ]);
+      expect(outbound).toMatchObject({
+        webhookURL: URL_OURS,
+        webhookType: "enhanced",
+        accountAddresses: ["BOUNDARY"],
+        transactionTypes: [...HELIUS_WEBHOOK_TRANSACTION_TYPES],
+      });
+      expect((outbound["transactionTypes"] as string[]).length).toBeGreaterThan(
+        0,
+      );
+    },
+  );
 
   it("rejects empty transactionTypes locally before calling Helius", async () => {
     const fake = fakeHelius([existing(["A"])]);
@@ -306,13 +321,11 @@ describe("HeliusWebhookManager", () => {
   });
 
   it("captures safe diagnostics for deterministic validation failures", async () => {
-    const request = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: "invalid webhook URL" }), {
-          status: 400,
-        }),
-      );
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid webhook URL" }), {
+        status: 400,
+      }),
+    );
     const error = await manager(request)
       .createSubscription(["A"])
       .catch((thrown: unknown) => thrown);
@@ -330,7 +343,9 @@ describe("HeliusWebhookManager", () => {
         },
       },
     });
-    expect((error as ProviderRequestError).diagnostics?.responseBody).toContain("invalid webhook URL");
+    expect((error as ProviderRequestError).diagnostics?.responseBody).toContain(
+      "invalid webhook URL",
+    );
     expect(JSON.stringify(error)).not.toContain(apiKey);
     expect(JSON.stringify(error)).not.toContain(secret);
     expect((error as ProviderRequestError).diagnostics?.requestUrl).toBe(
