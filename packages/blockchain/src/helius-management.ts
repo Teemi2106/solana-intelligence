@@ -27,6 +27,15 @@ export const HELIUS_WEBHOOK_TRANSACTION_TYPES: readonly string[] = [
   "CLOSE_ACCOUNT",
 ];
 
+export interface HeliusWebhookRequestDiagnostic {
+  readonly operation: "create" | "update";
+  readonly webhookUrl: string;
+  readonly webhookType: string;
+  readonly transactionTypes: readonly string[];
+  readonly transactionTypeCount: number;
+  readonly accountAddressCount: number;
+}
+
 const webhookSchema = z.object({
   webhookID: z.string().min(1),
   webhookURL: z.string(),
@@ -48,6 +57,8 @@ export interface HeliusWebhookManagerOptions {
   readonly sleep?: (milliseconds: number) => Promise<void>;
   /** Overrides the default; must be non-empty or every write fails locally. */
   readonly transactionTypes?: readonly string[];
+  /** Temporary safe production trace emitted immediately before a webhook create/update request. */
+  readonly requestDiagnostic?: (diagnostic: HeliusWebhookRequestDiagnostic) => void;
 }
 
 /**
@@ -216,6 +227,28 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
           : method === "PUT"
             ? "update"
             : "update";
+    const serializedBody = body === undefined ? undefined : JSON.stringify(body);
+    if (method === "POST" || method === "PUT") {
+      const outbound = JSON.parse(serializedBody ?? "null") as Record<string, unknown> | null;
+      const transactionTypes = outbound?.["transactionTypes"];
+      if (!Array.isArray(transactionTypes) || transactionTypes.length === 0)
+        throw new ProviderRequestError(
+          "Helius webhook outbound JSON must contain a non-empty transactionTypes array",
+          "INVALID_CONFIGURATION",
+          false,
+        );
+      const accountAddresses = outbound?.["accountAddresses"];
+      const webhookUrl = outbound?.["webhookURL"];
+      const webhookType = outbound?.["webhookType"];
+      this.options.requestDiagnostic?.({
+        operation: method === "POST" ? "create" : "update",
+        webhookUrl: typeof webhookUrl === "string" ? webhookUrl : "",
+        webhookType: typeof webhookType === "string" ? webhookType : "",
+        transactionTypes: transactionTypes.map(String),
+        transactionTypeCount: transactionTypes.length,
+        accountAddressCount: Array.isArray(accountAddresses) ? accountAddresses.length : 0,
+      });
+    }
     const requestMetadata = {
       method,
       operation,
@@ -260,7 +293,7 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
           accept: "application/json",
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(serializedBody === undefined ? {} : { body: serializedBody }),
       },
       {
         fetch: this.options.fetch ?? fetch,

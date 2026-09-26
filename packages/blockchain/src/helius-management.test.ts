@@ -150,7 +150,10 @@ describe("HeliusWebhookManager", () => {
 
   it("sends the same non-empty transactionTypes on create and update", async () => {
     const fake = fakeHelius([existing(["A"])]);
-    const m = manager(fake.request);
+    const diagnostics: unknown[] = [];
+    const m = manager(fake.request, {
+      requestDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
     await m.replaceAddresses("wh_1", ["B"]);
     await m.createSubscription(["C"]);
     const bodies = fake.calls
@@ -167,6 +170,57 @@ describe("HeliusWebhookManager", () => {
     }
     expect(bodies[0]?.["accountAddresses"]).toEqual(["B"]);
     expect(bodies[1]?.["accountAddresses"]).toEqual(["C"]);
+    expect(diagnostics).toEqual([
+      {
+        operation: "update",
+        webhookUrl: URL_OURS,
+        webhookType: "enhanced",
+        transactionTypes: [...HELIUS_WEBHOOK_TRANSACTION_TYPES],
+        transactionTypeCount: HELIUS_WEBHOOK_TRANSACTION_TYPES.length,
+        accountAddressCount: 1,
+      },
+      {
+        operation: "create",
+        webhookUrl: URL_OURS,
+        webhookType: "enhanced",
+        transactionTypes: [...HELIUS_WEBHOOK_TRANSACTION_TYPES],
+        transactionTypeCount: HELIUS_WEBHOOK_TRANSACTION_TYPES.length,
+        accountAddressCount: 1,
+      },
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain(apiKey);
+    expect(JSON.stringify(diagnostics)).not.toContain(secret);
+  });
+
+  it.each([
+    ["create", "POST", undefined],
+    ["update", "PUT", "wh_1"],
+  ] as const)("serializes the documented Helius JSON at the HTTP boundary for %s", async (_operation, method, id) => {
+    const bodies: string[] = [];
+    const request = vi.fn<typeof fetch>((_input, init) => {
+      if (init?.method === "POST" || init?.method === "PUT") {
+        if (typeof init.body !== "string") throw new Error("expected serialized JSON body");
+        bodies.push(init.body);
+      }
+      const response = id
+        ? existing(["A"], { accountAddresses: ["BOUNDARY"] })
+        : existing(["BOUNDARY"]);
+      return Promise.resolve(new Response(JSON.stringify(response), { status: 200 }));
+    });
+    const m = manager(request);
+    if (method === "POST") await m.createSubscription(["BOUNDARY"]);
+    else await m.replaceAddresses(id, ["BOUNDARY"]);
+    const outbound = JSON.parse(defined(bodies[0])) as Record<string, unknown>;
+    expect(Object.keys(outbound).sort()).toEqual([
+      "accountAddresses", "authHeader", "transactionTypes", "webhookType", "webhookURL",
+    ]);
+    expect(outbound).toMatchObject({
+      webhookURL: URL_OURS,
+      webhookType: "enhanced",
+      accountAddresses: ["BOUNDARY"],
+      transactionTypes: [...HELIUS_WEBHOOK_TRANSACTION_TYPES],
+    });
+    expect((outbound["transactionTypes"] as string[]).length).toBeGreaterThan(0);
   });
 
   it("rejects empty transactionTypes locally before calling Helius", async () => {

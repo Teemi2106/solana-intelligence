@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { HeliusBlockchainProvider, normalizeHeliusTransaction, type HeliusTransaction } from "@swi/blockchain";
+import { HELIUS_WEBHOOK_TRANSACTION_TYPES, HeliusBlockchainProvider, HeliusWebhookManager, normalizeHeliusTransaction, type HeliusTransaction } from "@swi/blockchain";
 import { FIXTURE_WALLET, loadWalletFixtures } from "@swi/blockchain/fixtures";
 import { schema, type Database } from "@swi/db";
 import { createTestDatabase, requireDatabase } from "@swi/db/testing";
@@ -287,6 +287,48 @@ describe.skipIf(!context)("live handlers", () => {
       };
       await handleReconcileSubscriptions(deps({ subscriptions: provider }));
       expect(scheduler.of("gap").map((call) => call.args)).toEqual([[walletId]]);
+    });
+
+    it("routes reconciliation through the HTTP-bound Helius provider with transactionTypes", async () => {
+      await addWallet(database());
+      const outbound: string[] = [];
+      const request = vi.fn<typeof fetch>((input, init) => {
+        const url = new URL(input instanceof Request ? input.url : input.toString());
+        const method = init?.method ?? "GET";
+        if (method === "POST") {
+          if (typeof init?.body !== "string") throw new Error("expected serialized JSON body");
+          outbound.push(init.body);
+          return Promise.resolve(new Response(JSON.stringify({
+            webhookID: "wh_reconcile",
+            webhookURL: "https://example.com/api/webhooks/helius",
+            webhookType: "enhanced",
+            accountAddresses: [FIXTURE_WALLET],
+            active: true,
+          }), { status: 200 }));
+        }
+        if (url.pathname.endsWith("/wh_reconcile")) return Promise.resolve(new Response(JSON.stringify({
+          webhookID: "wh_reconcile",
+          webhookURL: "https://example.com/api/webhooks/helius",
+          webhookType: "enhanced",
+          accountAddresses: [FIXTURE_WALLET],
+          active: true,
+        }), { status: 200 }));
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      });
+      const subscriptions = new HeliusWebhookManager({
+        apiKey: "test-api-key",
+        webhookUrl: "https://example.com/api/webhooks/helius",
+        webhookSecret: "test-webhook-secret".repeat(2),
+        fetch: request,
+      });
+      const result = await handleReconcileSubscriptions(deps({ subscriptions }));
+      expect(result.outcome).toBe("CREATED");
+      expect(request.mock.calls.map((call) => call[1]?.method ?? "GET")).toEqual(["GET", "POST", "GET"]);
+      expect(JSON.parse(outbound[0] ?? "null")).toMatchObject({
+        webhookURL: "https://example.com/api/webhooks/helius",
+        accountAddresses: [FIXTURE_WALLET],
+        transactionTypes: [...HELIUS_WEBHOOK_TRANSACTION_TYPES],
+      });
     });
   });
 
