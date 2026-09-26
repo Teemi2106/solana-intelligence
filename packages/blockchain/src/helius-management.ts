@@ -11,6 +11,22 @@ import { defaultSleep, requestJson } from "./http";
 /** Helius allows 100,000 addresses per webhook (API). */
 export const HELIUS_MAX_WEBHOOK_ADDRESSES = 100_000;
 
+/**
+ * Helius rejects an empty transactionTypes array (400 "At least one transaction type is required").
+ * Enhanced webhooks filter by parsed type, so this must stay broad enough not to drop relevant wallet
+ * activity: SWAP/TRANSFER cover trades and token/SOL movement, UNKNOWN catches transactions Helius
+ * cannot classify (e.g. bonding-curve and aggregator trades), and BURN/TOKEN_MINT/CLOSE_ACCOUNT cover
+ * balance-changing token operations. All values are listed in Helius' webhook transaction-types docs.
+ */
+export const HELIUS_WEBHOOK_TRANSACTION_TYPES: readonly string[] = [
+  "SWAP",
+  "TRANSFER",
+  "UNKNOWN",
+  "BURN",
+  "TOKEN_MINT",
+  "CLOSE_ACCOUNT",
+];
+
 const webhookSchema = z.object({
   webhookID: z.string().min(1),
   webhookURL: z.string(),
@@ -30,6 +46,8 @@ export interface HeliusWebhookManagerOptions {
   readonly maxAttempts?: number;
   readonly baseUrl?: string;
   readonly sleep?: (milliseconds: number) => Promise<void>;
+  /** Overrides the default; must be non-empty or every write fails locally. */
+  readonly transactionTypes?: readonly string[];
 }
 
 /**
@@ -72,13 +90,11 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
     addresses: readonly string[],
   ): Promise<LiveSubscriptionState> {
     this.assertLimit(addresses);
-    const created = await this.call("POST", "/v0/webhooks", {
-      webhookURL: this.options.webhookUrl,
-      webhookType: "enhanced",
-      transactionTypes: [],
-      accountAddresses: addresses,
-      authHeader: heliusAuthHeaderValue(this.options.webhookSecret),
-    });
+    const created = await this.call(
+      "POST",
+      "/v0/webhooks",
+      this.webhookBody(addresses),
+    );
     const parsed = webhookSchema.safeParse(created);
     if (!parsed.success)
       throw new ProviderRequestError(
@@ -94,13 +110,11 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
     addresses: readonly string[],
   ): Promise<LiveSubscriptionState> {
     this.assertLimit(addresses);
-    await this.call("PUT", `/v0/webhooks/${encodeURIComponent(externalId)}`, {
-      webhookURL: this.options.webhookUrl,
-      webhookType: "enhanced",
-      transactionTypes: [],
-      accountAddresses: addresses,
-      authHeader: heliusAuthHeaderValue(this.options.webhookSecret),
-    });
+    await this.call(
+      "PUT",
+      `/v0/webhooks/${encodeURIComponent(externalId)}`,
+      this.webhookBody(addresses),
+    );
     return this.readBack(externalId);
   }
 
@@ -151,6 +165,30 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
       webhookUrl: webhook.webhookURL,
       addresses: [...new Set(webhook.accountAddresses)].sort(),
       active: webhook.active ?? true,
+    };
+  }
+
+  /** Single payload shape for create and update so both use identical transaction-type semantics. */
+  private webhookBody(addresses: readonly string[]) {
+    const transactionTypes = [
+      ...new Set(
+        (this.options.transactionTypes ?? HELIUS_WEBHOOK_TRANSACTION_TYPES)
+          .map((type) => type.trim())
+          .filter((type) => type.length > 0),
+      ),
+    ];
+    if (transactionTypes.length === 0)
+      throw new ProviderRequestError(
+        "Helius webhook transactionTypes must contain at least one type",
+        "INVALID_CONFIGURATION",
+        false,
+      );
+    return {
+      webhookURL: this.options.webhookUrl,
+      webhookType: "enhanced",
+      transactionTypes,
+      accountAddresses: addresses,
+      authHeader: heliusAuthHeaderValue(this.options.webhookSecret),
     };
   }
 
