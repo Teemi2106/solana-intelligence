@@ -5,8 +5,13 @@
     "node": "22"
   },
   "steps": {
+    "install": {
+      "commands": [
+        "npm install --global npm@11.6.0 && npm --version && test \"$(npm --version)\" = \"11.6.0\" && npm ci"
+      ]
+    },
     "build": {
-      "commands": ["...", "npm run build"]
+      "commands": ["npm run build"]
     }
   },
   "deploy": {
