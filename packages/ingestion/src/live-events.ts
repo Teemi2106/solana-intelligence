@@ -38,7 +38,7 @@ export async function recordLiveEvents(database: Database, transactions: readonl
 export interface NormalizeLiveEventResult {
   readonly outcome: "PROCESSED" | "ALREADY_PROCESSED" | "NOT_FOUND" | "INVALID_PAYLOAD" | "NO_TRACKED_WALLET";
   /** Wallets that gained at least one new transaction (need finality tracking / recompute). */
-  readonly affected: readonly { readonly walletId: string; readonly signature: string; readonly tradesCreated: number; readonly created: boolean }[];
+  readonly affected: readonly { readonly walletId: string; readonly walletAddress: string; readonly signature: string; readonly transactionType: string; readonly occurredAt: Date; readonly tradesCreated: number; readonly created: boolean }[];
 }
 
 /**
@@ -65,7 +65,7 @@ export async function normalizeLiveEvent(dependencies: { database: Database; met
   const wallets = await database.query.select({ id: schema.trackedWallets.id, address: schema.trackedWallets.address }).from(schema.trackedWallets)
     .where(and(inArray(schema.trackedWallets.address, addresses), eq(schema.trackedWallets.status, "ACTIVE")));
 
-  const affected: { walletId: string; signature: string; tradesCreated: number; created: boolean }[] = [];
+  const affected: { walletId: string; walletAddress: string; signature: string; transactionType: string; occurredAt: Date; tradesCreated: number; created: boolean }[] = [];
   for (const wallet of wallets) {
     const chainTransaction = normalizeHeliusTransaction(wallet.address as WalletAddress, tx);
     const persisted = await database.query.transaction(async (transaction) => {
@@ -74,7 +74,7 @@ export async function normalizeLiveEvent(dependencies: { database: Database; met
         .onConflictDoUpdate({ target: schema.walletLiveMonitoring.walletId, set: { lastEventAt: sql`greatest(${schema.walletLiveMonitoring.lastEventAt}, excluded.last_event_at)`, lastSignature: sql`case when ${schema.walletLiveMonitoring.lastSlot} is null or excluded.last_slot >= ${schema.walletLiveMonitoring.lastSlot} then excluded.last_signature else ${schema.walletLiveMonitoring.lastSignature} end`, lastSlot: sql`greatest(${schema.walletLiveMonitoring.lastSlot}, excluded.last_slot)`, updatedAt: new Date() } });
       return result;
     });
-    affected.push({ walletId: wallet.id, signature: tx.signature, tradesCreated: persisted.tradesCreated, created: persisted.created });
+    affected.push({ walletId: wallet.id, walletAddress: wallet.address, signature: tx.signature, transactionType: tx.type, occurredAt: chainTransaction.occurredAt, tradesCreated: persisted.tradesCreated, created: persisted.created });
     dependencies.metrics?.increment("live_normalization_total", { outcome: persisted.created ? "created" : "existing", kind: persisted.kind });
     if (persisted.tradesCreated > 0) dependencies.metrics?.increment("live_trades_reconstructed_total", {}, persisted.tradesCreated);
   }

@@ -31,6 +31,7 @@
     "db:migrate": "node scripts/run-with-env.mjs db-migrate",
     "wallet:diagnose": "node scripts/diagnose-wallet.mjs",
     "wallet:reprocess": "node scripts/run-with-env.mjs wallet-reprocess",
+    "telegram:test": "npm run build --workspace @swi/worker && node scripts/run-with-env.mjs telegram-test",
     "check": "npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {

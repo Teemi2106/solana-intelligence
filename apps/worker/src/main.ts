@@ -49,6 +49,7 @@ import {
   type LiveScheduler,
 } from "./live-handlers.js";
 import { createHistoricalPriceProvider } from "./price-provider.js";
+import { createTelegramNotifier } from "./telegram-notifier.js";
 
 const config = parseConfig(process.env);
 const liveEnabled = config.ENABLE_LIVE_INGESTION;
@@ -65,6 +66,9 @@ const healthServer = startHealthServer({
   metrics,
 });
 const queues = createQueues(queueRedis);
+const liveNotifier = config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_CHAT_ID
+  ? createTelegramNotifier({ enabled: config.ENABLE_TELEGRAM, botToken: config.TELEGRAM_BOT_TOKEN, chatId: config.TELEGRAM_CHAT_ID })
+  : undefined;
 
 const helius = config.HELIUS_API_KEY
   ? new HeliusBlockchainProvider({ apiKey: config.HELIUS_API_KEY })
@@ -126,6 +130,8 @@ const handlers: LiveHandlerDependencies = {
   ...(subscriptions ? { subscriptions } : {}),
   ...(rpc ? { finality: rpc, launch: rpc } : {}),
   prices: createHistoricalPriceProvider(database),
+  logger,
+  ...(liveNotifier ? { liveNotifier } : {}),
 };
 
 const observe = (

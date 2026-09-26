@@ -1,5 +1,5 @@
 import { and, eq, isNotNull } from "drizzle-orm";
-import type { BlockchainProvider, FinalityProvider, HistoricalPriceProvider, LiveSubscriptionProvider, TokenLaunchProvider } from "@swi/domain";
+import type { BlockchainProvider, FinalityProvider, HistoricalPriceProvider, LiveSubscriptionProvider, NotificationProvider, TokenLaunchProvider } from "@swi/domain";
 import type { Database } from "@swi/db";
 import { schema } from "@swi/db";
 import {
@@ -29,6 +29,8 @@ export interface LiveHandlerDependencies {
   readonly finality?: FinalityProvider;
   readonly launch?: TokenLaunchProvider;
   readonly prices?: HistoricalPriceProvider;
+  readonly liveNotifier?: NotificationProvider;
+  readonly logger?: { warn(context: Readonly<Record<string, unknown>>, message: string): void };
 }
 
 const need = <T>(value: T | undefined, name: string): T => {
@@ -46,10 +48,43 @@ export async function handleNormalizeLiveEvent(dependencies: LiveHandlerDependen
   for (const item of result.affected) {
     if (item.created) await dependencies.scheduler.finalityCheck(item.signature, 0, FINALITY_FIRST_DELAY_MS);
     if (item.tradesCreated > 0) wallets.add(item.walletId);
+    if (item.created && dependencies.liveNotifier) {
+      try {
+        await dependencies.liveNotifier.deliver({
+          deduplicationKey: `phase3-live:${item.walletId}:${item.signature}`,
+          severity: "INFO",
+          text: liveActivityMessage(item),
+        });
+      } catch (error) {
+        dependencies.logger?.warn({
+          operation: "telegram-live-diagnostic",
+          providerEventId,
+          walletId: item.walletId,
+          signature: short(item.signature),
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        }, "live diagnostic notification failed");
+      }
+    }
   }
   // Pricing only: confirmed trades are shown live but do not feed accounting until finalized.
   for (const walletId of wallets) await dependencies.scheduler.recompute(walletId, "price-only");
   return result;
+}
+
+const short = (value: string): string => value.length <= 16 ? value : `${value.slice(0, 8)}...${value.slice(-6)}`;
+
+export function liveActivityMessage(item: { walletAddress: string; transactionType: string; signature: string; occurredAt: Date }): string {
+  return [
+    "🎲 Degen Scout — Live Wallet Activity",
+    "",
+    `Wallet: ${short(item.walletAddress)}`,
+    `Type: ${item.transactionType}`,
+    `Signature: ${short(item.signature)}`,
+    "Status: Processed live",
+    `Time: ${item.occurredAt.toISOString()}`,
+    "",
+    "Live pipeline confirmed ✅",
+  ].join("\n");
 }
 
 export async function handleFinalityCheck(dependencies: LiveHandlerDependencies, input: { signature: string; attempt: number }) {

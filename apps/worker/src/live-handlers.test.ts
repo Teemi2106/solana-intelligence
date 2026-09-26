@@ -4,7 +4,7 @@ import { HELIUS_WEBHOOK_TRANSACTION_TYPES, HeliusBlockchainProvider, HeliusWebho
 import { FIXTURE_WALLET, loadWalletFixtures } from "@swi/blockchain/fixtures";
 import { schema, type Database } from "@swi/db";
 import { createTestDatabase, requireDatabase } from "@swi/db/testing";
-import type { FinalityProvider, FinalityStatus, LiveSubscriptionProvider, TokenLaunchProvider, WalletAddress } from "@swi/domain";
+import type { FinalityProvider, FinalityStatus, LiveSubscriptionProvider, NotificationMessage, NotificationProvider, TokenLaunchProvider, WalletAddress } from "@swi/domain";
 import { normalizeLiveEvent, persistHistoricalTransaction, recordLiveEvents } from "@swi/ingestion";
 import { CachingHistoricalPriceProvider, CoinbaseSolUsdProvider, RoutingHistoricalPriceProvider } from "@swi/market-data";
 import { MetricsRegistry } from "@swi/observability";
@@ -34,6 +34,17 @@ class RecordingScheduler implements LiveScheduler {
   gapBackfill(walletId: string) { return this.record("gap", walletId); }
   enrichLaunchFacts(walletId: string) { return this.record("enrich", walletId); }
   of(kind: string) { return this.calls.filter((call) => call.kind === kind); }
+}
+
+class RecordingNotifier implements NotificationProvider {
+  readonly messages: NotificationMessage[] = [];
+  constructor(private readonly failure?: Error) {}
+  deliver(message: NotificationMessage) {
+    if (this.failure) return Promise.reject(this.failure);
+    this.messages.push(message);
+    return Promise.resolve({ externalId: String(this.messages.length) });
+  }
+  checkHealth() { return Promise.resolve({ name: "test", status: "up" as const, latencyMs: 0 }); }
 }
 
 /** Fake Coinbase serving deterministic candles: open = 100 + minute % 7. */
@@ -84,6 +95,32 @@ describe.skipIf(!context)("live handlers", () => {
   const recordOne = async (transaction: HeliusTransaction) => (await recordLiveEvents(database(), [transaction])).accepted[0]?.id ?? "";
 
   describe("live path scheduling", () => {
+    it("notifies exactly once after a genuinely new live transaction is persisted", async () => {
+      await addWallet(database());
+      const notifier = new RecordingNotifier();
+      const eventId = await recordOne(fixtures.pumpAmmBuy);
+      const first = await handleNormalizeLiveEvent(deps({ liveNotifier: notifier }), eventId);
+      const retry = await handleNormalizeLiveEvent(deps({ liveNotifier: notifier }), eventId);
+      expect(first.outcome).toBe("PROCESSED");
+      expect(retry.outcome).toBe("ALREADY_PROCESSED");
+      expect(notifier.messages).toHaveLength(1);
+      const [affected] = first.affected;
+      if (!affected) throw new Error("expected affected wallet");
+      expect(notifier.messages[0]).toMatchObject({ deduplicationKey: `phase3-live:${affected.walletId}:${fixtures.pumpAmmBuy.signature}` });
+      expect(notifier.messages[0]?.text).toContain("Status: Processed live");
+    });
+
+    it("isolates Telegram failure after persistence and logs only safe identifiers", async () => {
+      await addWallet(database());
+      const warn = vi.fn();
+      const eventId = await recordOne(fixtures.pumpAmmBuy);
+      await expect(handleNormalizeLiveEvent(deps({ liveNotifier: new RecordingNotifier(new Error("TELEGRAM_DELIVERY_FAILED")), logger: { warn } }), eventId)).resolves.toMatchObject({ outcome: "PROCESSED" });
+      expect((await database().query.select().from(schema.walletTransactions))).toHaveLength(1);
+      expect((await database().query.select().from(schema.providerEvents))[0]).toMatchObject({ status: "PROCESSED" });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
+    });
+
     it("schedules a finality check per new transaction and price-only recompute per wallet, never a full rebuild", async () => {
       const walletId = await addWallet(database());
       const result = await handleNormalizeLiveEvent(deps(), await recordOne(fixtures.pumpAmmBuy));
@@ -97,6 +134,19 @@ describe.skipIf(!context)("live handlers", () => {
       await database().query.transaction((transaction) => persistHistoricalTransaction(transaction, walletId, normalizeHeliusTransaction(FIXTURE_WALLET as WalletAddress, fixtures.pumpAmmBuy)));
       await handleNormalizeLiveEvent(deps(), await recordOne(fixtures.pumpAmmBuy));
       expect(scheduler.calls).toEqual([]);
+    });
+
+    it("never notifies for historical ingestion, gap backfill, or recomputation", async () => {
+      const walletId = await addWallet(database());
+      const notifier = new RecordingNotifier();
+      await database().query.transaction((transaction) => persistHistoricalTransaction(transaction, walletId, normalizeHeliusTransaction(FIXTURE_WALLET as WalletAddress, fixtures.pumpAmmBuy)));
+      const history = new HeliusBlockchainProvider({
+        apiKey: "k",
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify([fixtures.pumpAmmSell]), { status: 200 })),
+      });
+      await handleGapBackfill(deps({ history, liveNotifier: notifier }), walletId);
+      await handleWalletRecompute(deps({ prices: priceStack(database()).provider, liveNotifier: notifier }), { walletId, mode: "price-only" });
+      expect(notifier.messages).toEqual([]);
     });
   });
 
