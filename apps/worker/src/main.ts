@@ -82,6 +82,9 @@ const subscriptions =
         apiKey: config.HELIUS_API_KEY,
         webhookUrl: config.LIVE_WEBHOOK_PUBLIC_URL,
         webhookSecret: config.HELIUS_WEBHOOK_SECRET,
+        requestDiagnostic: (diagnostic) => {
+          logger.info(diagnostic);
+        },
       })
     : undefined;
 

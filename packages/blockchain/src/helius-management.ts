@@ -11,6 +11,31 @@ import { defaultSleep, requestJson } from "./http";
 /** Helius allows 100,000 addresses per webhook (API). */
 export const HELIUS_MAX_WEBHOOK_ADDRESSES = 100_000;
 
+/**
+ * Helius rejects an empty transactionTypes array (400 "At least one transaction type is required").
+ * Enhanced webhooks filter by parsed type, so this must stay broad enough not to drop relevant wallet
+ * activity: SWAP/TRANSFER cover trades and token/SOL movement, UNKNOWN catches transactions Helius
+ * cannot classify (e.g. bonding-curve and aggregator trades), and BURN/TOKEN_MINT/CLOSE_ACCOUNT cover
+ * balance-changing token operations. All values are listed in Helius' webhook transaction-types docs.
+ */
+export const HELIUS_WEBHOOK_TRANSACTION_TYPES: readonly string[] = [
+  "SWAP",
+  "TRANSFER",
+  "UNKNOWN",
+  "BURN",
+  "TOKEN_MINT",
+  "CLOSE_ACCOUNT",
+];
+
+export interface HeliusWebhookRequestDiagnostic {
+  readonly operation: "create" | "update";
+  readonly webhookUrl: string;
+  readonly webhookType: string;
+  readonly transactionTypes: readonly string[];
+  readonly transactionTypeCount: number;
+  readonly accountAddressCount: number;
+}
+
 const webhookSchema = z.object({
   webhookID: z.string().min(1),
   webhookURL: z.string(),
@@ -30,6 +55,10 @@ export interface HeliusWebhookManagerOptions {
   readonly maxAttempts?: number;
   readonly baseUrl?: string;
   readonly sleep?: (milliseconds: number) => Promise<void>;
+  /** Overrides the default; must be non-empty or every write fails locally. */
+  readonly transactionTypes?: readonly string[];
+  /** Temporary safe production trace emitted immediately before a webhook create/update request. */
+  readonly requestDiagnostic?: (diagnostic: HeliusWebhookRequestDiagnostic) => void;
 }
 
 /**
@@ -72,13 +101,11 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
     addresses: readonly string[],
   ): Promise<LiveSubscriptionState> {
     this.assertLimit(addresses);
-    const created = await this.call("POST", "/v0/webhooks", {
-      webhookURL: this.options.webhookUrl,
-      webhookType: "enhanced",
-      transactionTypes: [],
-      accountAddresses: addresses,
-      authHeader: heliusAuthHeaderValue(this.options.webhookSecret),
-    });
+    const created = await this.call(
+      "POST",
+      "/v0/webhooks",
+      this.webhookBody(addresses),
+    );
     const parsed = webhookSchema.safeParse(created);
     if (!parsed.success)
       throw new ProviderRequestError(
@@ -94,13 +121,11 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
     addresses: readonly string[],
   ): Promise<LiveSubscriptionState> {
     this.assertLimit(addresses);
-    await this.call("PUT", `/v0/webhooks/${encodeURIComponent(externalId)}`, {
-      webhookURL: this.options.webhookUrl,
-      webhookType: "enhanced",
-      transactionTypes: [],
-      accountAddresses: addresses,
-      authHeader: heliusAuthHeaderValue(this.options.webhookSecret),
-    });
+    await this.call(
+      "PUT",
+      `/v0/webhooks/${encodeURIComponent(externalId)}`,
+      this.webhookBody(addresses),
+    );
     return this.readBack(externalId);
   }
 
@@ -154,6 +179,30 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
     };
   }
 
+  /** Single payload shape for create and update so both use identical transaction-type semantics. */
+  private webhookBody(addresses: readonly string[]) {
+    const transactionTypes = [
+      ...new Set(
+        (this.options.transactionTypes ?? HELIUS_WEBHOOK_TRANSACTION_TYPES)
+          .map((type) => type.trim())
+          .filter((type) => type.length > 0),
+      ),
+    ];
+    if (transactionTypes.length === 0)
+      throw new ProviderRequestError(
+        "Helius webhook transactionTypes must contain at least one type",
+        "INVALID_CONFIGURATION",
+        false,
+      );
+    return {
+      webhookURL: this.options.webhookUrl,
+      webhookType: "enhanced",
+      transactionTypes,
+      accountAddresses: addresses,
+      authHeader: heliusAuthHeaderValue(this.options.webhookSecret),
+    };
+  }
+
   private assertLimit(addresses: readonly string[]): void {
     if (addresses.length > this.maxAddresses)
       throw new ProviderRequestError(
@@ -178,6 +227,28 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
           : method === "PUT"
             ? "update"
             : "update";
+    const serializedBody = body === undefined ? undefined : JSON.stringify(body);
+    if (method === "POST" || method === "PUT") {
+      const outbound = JSON.parse(serializedBody ?? "null") as Record<string, unknown> | null;
+      const transactionTypes = outbound?.["transactionTypes"];
+      if (!Array.isArray(transactionTypes) || transactionTypes.length === 0)
+        throw new ProviderRequestError(
+          "Helius webhook outbound JSON must contain a non-empty transactionTypes array",
+          "INVALID_CONFIGURATION",
+          false,
+        );
+      const accountAddresses = outbound?.["accountAddresses"];
+      const webhookUrl = outbound?.["webhookURL"];
+      const webhookType = outbound?.["webhookType"];
+      this.options.requestDiagnostic?.({
+        operation: method === "POST" ? "create" : "update",
+        webhookUrl: typeof webhookUrl === "string" ? webhookUrl : "",
+        webhookType: typeof webhookType === "string" ? webhookType : "",
+        transactionTypes: transactionTypes.map(String),
+        transactionTypeCount: transactionTypes.length,
+        accountAddressCount: Array.isArray(accountAddresses) ? accountAddresses.length : 0,
+      });
+    }
     const requestMetadata = {
       method,
       operation,
@@ -222,7 +293,7 @@ export class HeliusWebhookManager implements LiveSubscriptionProvider {
           accept: "application/json",
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(serializedBody === undefined ? {} : { body: serializedBody }),
       },
       {
         fetch: this.options.fetch ?? fetch,

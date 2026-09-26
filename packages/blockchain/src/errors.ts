@@ -6,7 +6,8 @@ export class ProviderRequestError extends Error {
       | "TIMEOUT"
       | "UNAVAILABLE"
       | "INVALID_RESPONSE"
-      | "UNAUTHORIZED",
+      | "UNAUTHORIZED"
+      | "INVALID_CONFIGURATION",
     readonly retryable: boolean,
     readonly retryAfterMs?: number,
     readonly diagnostics?: {
