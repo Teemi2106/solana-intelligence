@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+node_modules
+coverage
+dist
+.next
+*.tsbuildinfo
+docs
+docker-compose.yml
+railpack.json
+railway.toml
+nixpacks.toml
