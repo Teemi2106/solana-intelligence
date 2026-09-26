@@ -12,18 +12,56 @@ const valid = {
 
 describe("parseConfig", () => {
   it("rejects enabled integrations without credentials", () => {
-    expect(() => parseConfig({ ...valid, ENABLE_TELEGRAM: "true" })).toThrow(/TELEGRAM/);
+    expect(() => parseConfig({ ...valid, ENABLE_TELEGRAM: "true" })).toThrow(
+      /TELEGRAM/,
+    );
   });
 
   it("does not require disabled integration credentials", () => {
-    expect(parseConfig({ ...valid, HELIUS_WEBHOOK_SECRET: "", SENTRY_DSN: "" }).ENABLE_LIVE_INGESTION).toBe(false);
+    expect(
+      parseConfig({ ...valid, HELIUS_WEBHOOK_SECRET: "", SENTRY_DSN: "" })
+        .ENABLE_LIVE_INGESTION,
+    ).toBe(false);
   });
 
   it("requires every live-ingestion setting, and only when enabled", () => {
     const live = { ...valid, ENABLE_LIVE_INGESTION: "true" };
     expect(() => parseConfig(live)).toThrow(/HELIUS_API_KEY/);
-    expect(() => parseConfig({ ...live, HELIUS_API_KEY: "k", HELIUS_WEBHOOK_SECRET: "s".repeat(32) })).toThrow(/LIVE_WEBHOOK_PUBLIC_URL/);
-    expect(() => parseConfig({ ...live, HELIUS_API_KEY: "k", HELIUS_WEBHOOK_SECRET: "s".repeat(32), LIVE_WEBHOOK_PUBLIC_URL: "http://example.com/x" })).toThrow(/https/);
-    expect(parseConfig({ ...live, HELIUS_API_KEY: "k", HELIUS_WEBHOOK_SECRET: "s".repeat(32), LIVE_WEBHOOK_PUBLIC_URL: "https://example.com/api/webhooks/helius" }).ENABLE_LIVE_INGESTION).toBe(true);
+    expect(() =>
+      parseConfig({
+        ...live,
+        HELIUS_API_KEY: "k",
+        HELIUS_WEBHOOK_SECRET: "s".repeat(32),
+      }),
+    ).toThrow(/LIVE_WEBHOOK_PUBLIC_URL/);
+    expect(() =>
+      parseConfig({
+        ...live,
+        HELIUS_API_KEY: "k",
+        HELIUS_WEBHOOK_SECRET: "s".repeat(32),
+        LIVE_WEBHOOK_PUBLIC_URL: "http://example.com/x",
+      }),
+    ).toThrow(/https/);
+    expect(
+      parseConfig({
+        ...live,
+        HELIUS_API_KEY: "k",
+        HELIUS_WEBHOOK_SECRET: "s".repeat(32),
+        LIVE_WEBHOOK_PUBLIC_URL: "https://example.com/api/webhooks/helius",
+      }).ENABLE_LIVE_INGESTION,
+    ).toBe(true);
+  });
+
+  it("normalizes a production site origin to the webhook receiver route", () => {
+    const config = parseConfig({
+      ...valid,
+      ENABLE_LIVE_INGESTION: "true",
+      HELIUS_API_KEY: "k",
+      HELIUS_WEBHOOK_SECRET: "s".repeat(32),
+      LIVE_WEBHOOK_PUBLIC_URL: "https://example.com/",
+    });
+    expect(config.LIVE_WEBHOOK_PUBLIC_URL).toBe(
+      "https://example.com/api/webhooks/helius",
+    );
   });
 });

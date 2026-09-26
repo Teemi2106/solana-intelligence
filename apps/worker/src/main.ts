@@ -1,8 +1,9 @@
-import { Worker } from "bullmq";
+import { UnrecoverableError, Worker } from "bullmq";
 import {
   HeliusBlockchainProvider,
   HeliusRpcClient,
   HeliusWebhookManager,
+  ProviderRequestError,
 } from "@swi/blockchain";
 import { parseConfig } from "@swi/config";
 import { createDatabase, schema } from "@swi/db";
@@ -328,7 +329,11 @@ if (liveEnabled) {
           case "reconcile-subscriptions": {
             reconcileSubscriptionsJob.parse(job.data);
             const result = await withTimeout(
-              handleReconcileSubscriptions(handlers),
+              handleReconcileSubscriptions(handlers).catch((error: unknown) => {
+                if (error instanceof ProviderRequestError && !error.retryable)
+                  throw new UnrecoverableError(error.message);
+                throw error;
+              }),
               120_000,
               "RECONCILE",
             );
