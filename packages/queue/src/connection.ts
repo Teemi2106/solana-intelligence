@@ -25,6 +25,11 @@ export interface SanitizedRedisFailure {
   readonly errorName: string;
 }
 
+export type RedisLifecycleEvent =
+  | { readonly event: "connect" | "ready" | "close" | "end"; readonly status: string }
+  | { readonly event: "reconnecting"; readonly status: string; readonly delayMs: number }
+  | { readonly event: "error"; readonly status: string; readonly failure: SanitizedRedisFailure };
+
 /** Classifies a Redis failure without returning its message, URL, host, username, password or tokens. */
 export function sanitizeRedisFailure(error: unknown): SanitizedRedisFailure {
   const record = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
@@ -78,12 +83,29 @@ export function createRedisConnection(
 }
 
 /** Connects and authenticates before BullMQ takes ownership; preserves the most useful sanitized transport error. */
-export async function verifyRedisStartup(redis: Redis): Promise<void> {
+export async function verifyRedisStartup(
+  redis: Redis,
+  observe: (event: RedisLifecycleEvent) => void = () => undefined,
+): Promise<void> {
   let lastFailure: SanitizedRedisFailure | undefined;
   const capture = (error: Error) => {
-    lastFailure = sanitizeRedisFailure(error);
+    const failure = sanitizeRedisFailure(error);
+    // ioredis can emit a generic final "Connection is closed" after the actionable transport/authentication error.
+    // Keep the actionable cause while still exposing the complete sanitized event sequence to the observer.
+    if (!lastFailure || failure.category !== "connection_closed") lastFailure = failure;
+    observe({ event: "error", status: redis.status, failure });
   };
+  const connect = () => { observe({ event: "connect", status: redis.status }); };
+  const ready = () => { observe({ event: "ready", status: redis.status }); };
+  const close = () => { observe({ event: "close", status: redis.status }); };
+  const end = () => { observe({ event: "end", status: redis.status }); };
+  const reconnecting = (delayMs: number) => { observe({ event: "reconnecting", status: redis.status, delayMs }); };
   redis.on("error", capture);
+  redis.on("connect", connect);
+  redis.on("ready", ready);
+  redis.on("close", close);
+  redis.on("end", end);
+  redis.on("reconnecting", reconnecting);
   try {
     if (redis.status === "wait") await redis.connect();
     await redis.ping();
@@ -91,6 +113,11 @@ export async function verifyRedisStartup(redis: Redis): Promise<void> {
     throw new RedisStartupError(lastFailure ?? sanitizeRedisFailure(error));
   } finally {
     redis.off("error", capture);
+    redis.off("connect", connect);
+    redis.off("ready", ready);
+    redis.off("close", close);
+    redis.off("end", end);
+    redis.off("reconnecting", reconnecting);
   }
 }
 

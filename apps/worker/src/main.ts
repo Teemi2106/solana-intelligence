@@ -27,6 +27,7 @@ import {
   normalizeLiveEventJob,
   queueNames,
   reconcileSubscriptionsJob,
+  type RedisLifecycleEvent,
   RedisStartupError,
   sanitizeRedisFailure,
   tokenLaunchEnrichmentJob,
@@ -61,12 +62,25 @@ const metrics = new MetricsRegistry();
 const database = createDatabase(config.DATABASE_URL);
 const redis = createRedisConnection(config.REDIS_URL, "general");
 const queueRedis = createRedisConnection(config.REDIS_URL, "bullmq");
+let redisLifecycleSequence = 0;
+const observeRedisStartup = (purpose: "general" | "bullmq") =>
+  (event: RedisLifecycleEvent) => {
+    redisLifecycleSequence += 1;
+    logger.info(
+      { purpose, sequence: redisLifecycleSequence, ...event },
+      "Redis startup lifecycle",
+    );
+  };
 try {
-  await Promise.all([verifyRedisStartup(redis), verifyRedisStartup(queueRedis)]);
+  await Promise.all([
+    verifyRedisStartup(redis, observeRedisStartup("general")),
+    verifyRedisStartup(queueRedis, observeRedisStartup("bullmq")),
+  ]);
   logger.info({ tls: new URL(config.REDIS_URL).protocol === "rediss:" }, "Redis startup check passed");
 } catch (error) {
   const details = error instanceof RedisStartupError ? error.details : sanitizeRedisFailure(error);
   logger.fatal({ purpose: "startup", ...details }, "Redis startup check failed");
+  logger.info({ purpose: "startup", action: "application_disconnect_after_failed_check" }, "Redis startup cleanup");
   redis.disconnect(false);
   queueRedis.disconnect(false);
   await database.close();
