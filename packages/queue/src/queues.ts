@@ -9,14 +9,26 @@ const defaultJobOptions: JobsOptions = {
   removeOnFail: { age: 604_800, count: 50_000 },
 };
 
-export function createQueues(connection: Redis) {
-  return {
+export function createQueues(
+  connection: Redis,
+  onError: (error: Error, queue: string) => void = () => undefined,
+) {
+  const queues = {
     transactionIngestion: new Queue(queueNames.transactionIngestion, { connection, defaultJobOptions }),
     analysis: new Queue(queueNames.analysis, { connection, defaultJobOptions }),
     liveMaintenance: new Queue(queueNames.liveMaintenance, { connection, defaultJobOptions }),
     notificationDelivery: new Queue(queueNames.notificationDelivery, { connection, defaultJobOptions }),
     outcomeTracking: new Queue(queueNames.outcomeTracking, { connection, defaultJobOptions }),
   };
+  // EventEmitter treats an unhandled `error` event as an uncaught exception. Queue operations still reject their
+  // promises normally; this listener prevents a transient connection loss in BullMQ's internal JobScheduler from
+  // crashing the process independently of those promises.
+  for (const queue of Object.values(queues)) {
+    queue.on("error", (error) => {
+      onError(error, queue.name);
+    });
+  }
+  return queues;
 }
 
 export type AppQueues = ReturnType<typeof createQueues>;

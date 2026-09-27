@@ -65,7 +65,13 @@ const healthServer = startHealthServer({
   port: Number(process.env["PORT"] ?? 8080),
   metrics,
 });
-const queues = createQueues(queueRedis);
+const queues = createQueues(queueRedis, (error, queue) => {
+  metrics.increment("redis_errors_total", { command: redisCommandName(error), queue });
+  logger.error(
+    { purpose: "bullmq", queue, command: redisCommandName(error), ...errorDetails(error) },
+    "queue Redis error",
+  );
+});
 const liveNotifier = config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_CHAT_ID
   ? createTelegramNotifier({ enabled: config.ENABLE_TELEGRAM, botToken: config.TELEGRAM_BOT_TOKEN, chatId: config.TELEGRAM_CHAT_ID })
   : undefined;

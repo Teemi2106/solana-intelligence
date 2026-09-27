@@ -7,8 +7,12 @@ const commonOptions = {
   connectTimeout: 10_000,
 } satisfies RedisOptions;
 
-const retryStrategy = (attempt: number): number | null =>
-  attempt <= 12 ? Math.min(attempt * 250, 5_000) : null;
+// Keep reconnecting for the lifetime of a long-running process. Ordinary commands are still bounded by
+// maxRetriesPerRequest and commandTimeout below; returning null here permanently closes the shared connection and
+// makes a transient Redis outage unrecoverable without a process restart. BullMQ explicitly requires a persistent
+// connection because its blocking commands use maxRetriesPerRequest: null.
+const retryStrategy = (attempt: number): number =>
+  Math.min(attempt * 250, 5_000);
 
 export function redisConnectionOptions(
   purpose: RedisConnectionPurpose,

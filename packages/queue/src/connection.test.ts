@@ -12,7 +12,8 @@ describe("Redis connection profiles", () => {
       maxRetriesPerRequest: 3,
     });
     expect(options.retryStrategy?.(12)).toBe(3_000);
-    expect(options.retryStrategy?.(13)).toBeNull();
+    expect(options.retryStrategy?.(13)).toBe(3_250);
+    expect(options.retryStrategy?.(100)).toBe(5_000);
   });
 
   it("leaves BullMQ blocking commands without an application timeout", () => {
@@ -24,5 +25,6 @@ describe("Redis connection profiles", () => {
       maxRetriesPerRequest: null,
     });
     expect(options.commandTimeout).toBeUndefined();
+    expect(options.retryStrategy?.(100)).toBe(5_000);
   });
 });
