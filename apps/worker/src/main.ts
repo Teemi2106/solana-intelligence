@@ -27,7 +27,10 @@ import {
   normalizeLiveEventJob,
   queueNames,
   reconcileSubscriptionsJob,
+  RedisStartupError,
+  sanitizeRedisFailure,
   tokenLaunchEnrichmentJob,
+  verifyRedisStartup,
   walletRecomputeJob,
 } from "@swi/queue";
 import { startHealthServer } from "./health-server.js";
@@ -58,6 +61,17 @@ const metrics = new MetricsRegistry();
 const database = createDatabase(config.DATABASE_URL);
 const redis = createRedisConnection(config.REDIS_URL, "general");
 const queueRedis = createRedisConnection(config.REDIS_URL, "bullmq");
+try {
+  await Promise.all([verifyRedisStartup(redis), verifyRedisStartup(queueRedis)]);
+  logger.info({ tls: new URL(config.REDIS_URL).protocol === "rediss:" }, "Redis startup check passed");
+} catch (error) {
+  const details = error instanceof RedisStartupError ? error.details : sanitizeRedisFailure(error);
+  logger.fatal({ purpose: "startup", ...details }, "Redis startup check failed");
+  redis.disconnect(false);
+  queueRedis.disconnect(false);
+  await database.close();
+  throw new RedisStartupError(details);
+}
 const healthServer = startHealthServer({
   database,
   redis,

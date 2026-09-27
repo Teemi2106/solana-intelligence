@@ -7,12 +7,47 @@ const commonOptions = {
   connectTimeout: 10_000,
 } satisfies RedisOptions;
 
-// Keep reconnecting for the lifetime of a long-running process. Ordinary commands are still bounded by
-// maxRetriesPerRequest and commandTimeout below; returning null here permanently closes the shared connection and
-// makes a transient Redis outage unrecoverable without a process restart. BullMQ explicitly requires a persistent
-// connection because its blocking commands use maxRetriesPerRequest: null.
-const retryStrategy = (attempt: number): number =>
-  Math.min(attempt * 250, 5_000);
+const retryStrategy = (attempt: number): number | null =>
+  attempt <= 12 ? Math.min(attempt * 250, 5_000) : null;
+
+export type RedisFailureCategory =
+  | "authentication"
+  | "connection_closed"
+  | "connection_refused"
+  | "dns"
+  | "timeout"
+  | "tls"
+  | "unknown";
+
+export interface SanitizedRedisFailure {
+  readonly category: RedisFailureCategory;
+  readonly code: string;
+  readonly errorName: string;
+}
+
+/** Classifies a Redis failure without returning its message, URL, host, username, password or tokens. */
+export function sanitizeRedisFailure(error: unknown): SanitizedRedisFailure {
+  const record = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
+  const code = typeof record["code"] === "string" ? record["code"].toUpperCase() : "UNKNOWN";
+  const errorName = error instanceof Error ? error.name : "UnknownError";
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const category: RedisFailureCategory =
+    code === "ENOTFOUND" || code === "EAI_AGAIN" || message.includes("getaddrinfo") ? "dns"
+      : code === "ECONNREFUSED" ? "connection_refused"
+        : code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT" || message.includes("timeout") ? "timeout"
+          : code.startsWith("ERR_TLS") || code.includes("CERT") || message.includes("certificate") || message.includes("tls") ? "tls"
+            : message.includes("wrongpass") || message.includes("noauth") || message.includes("authentication") ? "authentication"
+              : message.includes("connection is closed") || code === "CONNECTION_CLOSED" ? "connection_closed"
+                : "unknown";
+  return { category, code, errorName };
+}
+
+export class RedisStartupError extends Error {
+  constructor(readonly details: SanitizedRedisFailure) {
+    super(`REDIS_STARTUP_FAILED category=${details.category} code=${details.code}`);
+    this.name = "RedisStartupError";
+  }
+}
 
 export function redisConnectionOptions(
   purpose: RedisConnectionPurpose,
@@ -40,6 +75,23 @@ export function createRedisConnection(
   );
   redis.on("error", () => undefined);
   return redis;
+}
+
+/** Connects and authenticates before BullMQ takes ownership; preserves the most useful sanitized transport error. */
+export async function verifyRedisStartup(redis: Redis): Promise<void> {
+  let lastFailure: SanitizedRedisFailure | undefined;
+  const capture = (error: Error) => {
+    lastFailure = sanitizeRedisFailure(error);
+  };
+  redis.on("error", capture);
+  try {
+    if (redis.status === "wait") await redis.connect();
+    await redis.ping();
+  } catch (error) {
+    throw new RedisStartupError(lastFailure ?? sanitizeRedisFailure(error));
+  } finally {
+    redis.off("error", capture);
+  }
 }
 
 export async function checkRedis(
