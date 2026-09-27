@@ -33,6 +33,9 @@ export const jobIds = {
   finalityCheck: (signature: string, attempt: number) => `finality-${signature}-${String(attempt)}`,
   gapBackfill: (walletId: string, now: Date) => `gap-backfill-${walletId}-${String(bucket(now, 60))}`,
   reconcile: (now: Date) => `reconcile-${String(bucket(now, 15))}`,
+  scheduledReconcile: (now: Date) => `reconcile-safety-${String(bucket(now, 6 * 60 * 60))}`,
+  sweep: (now: Date) => `sweep-${String(bucket(now, 5 * 60))}`,
+  gapScan: (now: Date) => `gap-scan-${String(bucket(now, 60 * 60))}`,
   tokenLaunch: (walletId: string, now: Date) => `token-launch-${walletId}-${String(bucket(now, 300))}`,
 };
 

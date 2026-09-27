@@ -43,13 +43,13 @@ No reconstruction, pricing, scoring or provider calls happen on this path. Measu
 | Queue | Job | Job id | Notes |
 |---|---|---|---|
 | transaction-ingestion | `normalize-live-event` | `live-normalize-<eventId>` | 8 attempts, exponential backoff, no network calls |
-| transaction-ingestion | `sweep` (every 60 s) | scheduler | requeues stuck events and unchecked confirmed transactions |
+| transaction-ingestion | `sweep` (every 5 min) | five-minute-bucket id | requeues stuck events and unchecked confirmed transactions |
 | analysis | `wallet-history` | run + cursor | unchanged; on completion enqueues a full recompute |
 | analysis | `wallet-recompute` (`price-only` / `full`) | `recompute-<mode>-<wallet>-<10 s bucket>` | debounced |
 | analysis | `token-launch-enrichment` | `token-launch-<wallet>-<5 min bucket>` | rate-limited, sequential |
 | live-maintenance | `finality-check` | `finality-<signature>-<attempt>` | delayed, self-rescheduling, bounded (40 attempts) |
-| live-maintenance | `reconcile-subscriptions` (every 5 min + on wallet change) | `reconcile-<15 s bucket>` | |
-| live-maintenance | `gap-backfill` / `gap-scan` (every 15 min) | `gap-backfill-<wallet>-<1 min bucket>` | |
+| live-maintenance | `reconcile-subscriptions` (every 6 h + startup + on wallet change) | event or six-hour-bucket id | slow self-healing; normal changes are event-driven |
+| live-maintenance | `gap-backfill` / `gap-scan` (every 1 h) | `gap-backfill-<wallet>-<1 min bucket>` | periodic recovery safety net |
 
 BullMQ forbids `:` in custom ids, hence `-`. Exhausted jobs are written to `processing_failures` (safe metadata only) and, for events, `provider_events.status = FAILED`. Every job has an outer timeout; provider adapters add their own request timeouts. No database transaction spans a network call.
 
@@ -68,7 +68,7 @@ Performance snapshots, scores and classifications are append-only versions: a ne
 
 ## Subscription reconciliation
 
-Desired state = `ACTIVE` rows of `tracked_wallets`. Reconcile reads the provider webhook, diffs, and only when different PUTs the full address set (creating the webhook if absent, re-enabling if disabled, pausing it if no wallet is active), then reads back and verifies. Every run is recorded in `provider_sync_runs`; `provider_subscriptions` caches the observed state (never authoritative); `wallet_live_monitoring.provider_confirmed_at` records which wallets the provider is confirmed to watch. Failures are recorded, the subscription is marked `ERROR`, and the job retries with backoff; the 5-minute schedule and worker restarts re-assert the intent. Newly monitored wallets get a gap backfill.
+Desired state = `ACTIVE` rows of `tracked_wallets`. Wallet create/status changes enqueue reconciliation directly. Reconcile reads the provider webhook, diffs, and only when different PUTs the full address set (creating the webhook if absent, re-enabling if disabled, pausing it if no wallet is active), then reads back and verifies. Every run is recorded in `provider_sync_runs`; `provider_subscriptions` caches the observed state (never authoritative); `wallet_live_monitoring.provider_confirmed_at` records which wallets the provider is confirmed to watch. Failures are recorded, the subscription is marked `ERROR`, and the job retries with backoff; a six-hour safety pass and worker startup re-assert intent if an event was lost or the provider changed out of band. Newly monitored wallets get a gap backfill.
 
 Limitation: if `LIVE_WEBHOOK_PUBLIC_URL` changes, the old webhook is no longer recognized as ours and a new one is created. Delete stale webhooks in the Helius dashboard (or use a stable URL).
 

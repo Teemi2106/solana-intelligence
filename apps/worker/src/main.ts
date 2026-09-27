@@ -134,6 +134,21 @@ const handlers: LiveHandlerDependencies = {
   ...(liveNotifier ? { liveNotifier } : {}),
 };
 
+// An idle BullMQ worker otherwise wakes its blocking Redis command every five seconds.
+// Markers still wake workers immediately when a job arrives, so a longer drained wait cuts idle commands without
+// adding job latency. Stalled checks remain frequent relative to the longest lock and preserve crash recovery.
+const idleWorkerOptions = { drainDelay: 60, stalledInterval: 120_000 } as const;
+const safetyTimers: NodeJS.Timeout[] = [];
+function scheduleSafetyJob(intervalMs: number, enqueue: () => Promise<unknown>): void {
+  const timer = setInterval(() => {
+    void enqueue().catch((error: unknown) => {
+      logger.error(errorDetails(error), "safety job enqueue failed");
+    });
+  }, intervalMs);
+  timer.unref();
+  safetyTimers.push(timer);
+}
+
 const observe = (
   queue: string,
   job: { name: string } | undefined,
@@ -255,6 +270,7 @@ const analysisWorker = new Worker(
     lockDuration: 120_000,
     maxStalledCount: 2,
     limiter: { max: 20, duration: 1_000 },
+    ...idleWorkerOptions,
   },
 );
 observeWorkerRedisErrors(analysisWorker, queueNames.analysis);
@@ -310,6 +326,7 @@ if (liveEnabled) {
       concurrency: 10,
       lockDuration: 60_000,
       maxStalledCount: 3,
+      ...idleWorkerOptions,
     },
   );
   observeWorkerRedisErrors(ingestionWorker, queueNames.transactionIngestion);
@@ -395,6 +412,7 @@ if (liveEnabled) {
       lockDuration: 120_000,
       maxStalledCount: 2,
       limiter: { max: 10, duration: 1_000 },
+      ...idleWorkerOptions,
     },
   );
   observeWorkerRedisErrors(maintenanceWorker, queueNames.liveMaintenance);
@@ -415,21 +433,29 @@ if (liveEnabled) {
   });
   liveWorkers.push(ingestionWorker, maintenanceWorker);
 
-  // Desired state is re-asserted on every start and periodically: restarting never loses subscription intent.
-  await queues.liveMaintenance.upsertJobScheduler(
-    "reconcile-scheduled",
-    { every: 300_000 },
-    { name: "reconcile-subscriptions", data: { reason: "scheduled" } },
+  // Remove scheduler definitions created by older releases; otherwise their delayed jobs survive deployment.
+  await Promise.all([
+    queues.liveMaintenance.removeJobScheduler("reconcile-scheduled"),
+    queues.liveMaintenance.removeJobScheduler("gap-scan-scheduled"),
+    queues.transactionIngestion.removeJobScheduler("sweep-scheduled"),
+  ]);
+
+  // These are safety nets, not the source of truth. Process timers avoid keeping delayed scheduler markers in Redis,
+  // which force otherwise idle BullMQ workers to poll every ten seconds. Bucketed ids make ticks idempotent if
+  // multiple replicas are running; a restart merely delays the next safety scan, while startup reconciliation below
+  // immediately re-asserts subscription intent.
+  scheduleSafetyJob(5 * 60_000, () =>
+    queues.transactionIngestion.add("sweep", {}, { jobId: jobIds.sweep(new Date()) }),
   );
-  await queues.liveMaintenance.upsertJobScheduler(
-    "gap-scan-scheduled",
-    { every: 900_000 },
-    { name: "gap-scan", data: {} },
+  scheduleSafetyJob(60 * 60_000, () =>
+    queues.liveMaintenance.add("gap-scan", {}, { jobId: jobIds.gapScan(new Date()) }),
   );
-  await queues.transactionIngestion.upsertJobScheduler(
-    "sweep-scheduled",
-    { every: 60_000 },
-    { name: "sweep", data: {} },
+  scheduleSafetyJob(6 * 60 * 60_000, () =>
+    queues.liveMaintenance.add(
+      "reconcile-subscriptions",
+      { reason: "scheduled" },
+      { jobId: jobIds.scheduledReconcile(new Date()), attempts: 8, backoff: { type: "exponential", delay: 5_000 } },
+    ),
   );
   await enqueueReconcileSubscriptions(queues, "startup");
   logger.info("live ingestion enabled");
@@ -482,6 +508,7 @@ function metricsSnapshot(): Record<string, number> {
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "graceful shutdown started");
   clearInterval(heartbeat);
+  for (const timer of safetyTimers) clearInterval(timer);
   healthServer.close();
   await analysisWorker.close();
   await Promise.all(liveWorkers.map((worker) => worker.close()));

@@ -7,10 +7,12 @@ const at = new Date("2026-09-25T12:00:04Z");
 
 describe("deterministic job ids", () => {
   it("never contain a colon (BullMQ rejects it) and are stable for the same entity", () => {
-    const ids = [jobIds.normalizeLiveEvent(id), jobIds.walletRecompute(id, "full", at), jobIds.finalityCheck(signature, 2), jobIds.gapBackfill(id, at), jobIds.reconcile(at), jobIds.tokenLaunch(id, at)];
+    const ids = [jobIds.normalizeLiveEvent(id), jobIds.walletRecompute(id, "full", at), jobIds.finalityCheck(signature, 2), jobIds.gapBackfill(id, at), jobIds.reconcile(at), jobIds.scheduledReconcile(at), jobIds.sweep(at), jobIds.gapScan(at), jobIds.tokenLaunch(id, at)];
     for (const value of ids) expect(value).not.toContain(":");
     expect(jobIds.normalizeLiveEvent(id)).toBe(jobIds.normalizeLiveEvent(id));
     expect(jobIds.finalityCheck(signature, 2)).toBe(jobIds.finalityCheck(signature, 2));
+    expect(jobIds.sweep(at)).toBe(jobIds.sweep(new Date(at.getTime() + 2 * 60_000)));
+    expect(jobIds.gapScan(at)).toBe(jobIds.gapScan(new Date(at.getTime() + 30 * 60_000)));
   });
 
   it("dedupes bursts inside a time bucket but allows work again in the next bucket", () => {
