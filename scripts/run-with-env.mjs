@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
 
@@ -17,13 +17,16 @@ const command = commands[target];
 if (!command) throw new Error(`Unknown local command: ${String(target)}`);
 
 const environment = { ...process.env };
-for (const line of readFileSync(resolve(root, ".env"), "utf8").split(/\r?\n/)) {
-  const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line.trim());
-  if (!match) continue;
-  const [, name, rawValue] = match;
-  if (!name || rawValue === undefined || environment[name] !== undefined) continue;
-  const quoted = (rawValue.startsWith("'") && rawValue.endsWith("'")) || (rawValue.startsWith('"') && rawValue.endsWith('"'));
-  environment[name] = quoted ? rawValue.slice(1, -1) : rawValue;
+const envPath = resolve(root, ".env");
+if (existsSync(envPath)) {
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line.trim());
+    if (!match) continue;
+    const [, name, rawValue] = match;
+    if (!name || rawValue === undefined || environment[name] !== undefined) continue;
+    const quoted = (rawValue.startsWith("'") && rawValue.endsWith("'")) || (rawValue.startsWith('"') && rawValue.endsWith('"'));
+    environment[name] = quoted ? rawValue.slice(1, -1) : rawValue;
+  }
 }
 
 const child = spawn(process.execPath, command.args, { cwd: command.cwd, env: environment, stdio: "inherit" });

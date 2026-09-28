@@ -33,6 +33,7 @@ RUN npm install --global npm@11.6.0 \
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/scripts/run-with-env.mjs ./scripts/run-with-env.mjs
 COPY --from=build /app/apps/web/package.json ./apps/web/package.json
 COPY --from=build /app/apps/worker/package.json ./apps/worker/package.json
 COPY --from=build /app/apps/worker/src ./apps/worker/src
@@ -46,6 +47,8 @@ COPY --from=build /app/packages/config/dist ./packages/config/dist
 COPY --from=build /app/packages/db/package.json ./packages/db/package.json
 COPY --from=build /app/packages/db/src ./packages/db/src
 COPY --from=build /app/packages/db/dist ./packages/db/dist
+COPY --from=build /app/packages/db/drizzle/*.sql ./packages/db/drizzle/
+COPY --from=build /app/packages/db/drizzle/meta/_journal.json ./packages/db/drizzle/meta/_journal.json
 COPY --from=build /app/packages/domain/package.json ./packages/domain/package.json
 COPY --from=build /app/packages/domain/src ./packages/domain/src
 COPY --from=build /app/packages/domain/dist ./packages/domain/dist
