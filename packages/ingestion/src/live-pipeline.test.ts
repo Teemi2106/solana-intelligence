@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HeliusBlockchainProvider, heliusTransaction, normalizeHeliusTransaction, type HeliusTransaction } from "@swi/blockchain";
 import { loadWalletFixtures } from "@swi/blockchain/fixtures";
-import { schema } from "@swi/db";
+import { eq, schema } from "@swi/db";
 import { createTestDatabase, requireDatabase } from "@swi/db/testing";
 import type { FinalityProvider, FinalityStatus, WalletAddress } from "@swi/domain";
 import { checkSignatureFinality, findUncheckedConfirmed, FINALITY_DROP_AFTER_MS } from "./finality";
@@ -321,6 +321,17 @@ describe.skipIf(!context)("live ingestion pipeline", () => {
       const again = await backfillWalletGap({ database: database(), provider }, walletId);
       expect(again.transactionsCreated).toBe(0);
       expect(await counts()).toEqual(before);
+      const [checkpoint] = await database().query.select().from(schema.walletRecoveryCheckpoints).where(eq(schema.walletRecoveryCheckpoints.walletId, walletId));
+      expect(checkpoint).toMatchObject({ lastScanStatus: "COMPLETED", consecutiveFailures: 0 });
+      expect(checkpoint?.verifiedThroughAt).toBeInstanceOf(Date);
+    });
+
+    it("does not advance a verified checkpoint when the page limit is reached", async () => {
+      const walletId = await addWallet(database(), FIXTURE_WALLET, "ACTIVE", { historyCompleted: true });
+      const fullPage = Array.from({ length: 100 }, () => fixtures.pumpAmmBuy);
+      const { provider } = history([fullPage]);
+      expect((await backfillWalletGap({ database: database(), provider }, walletId, { maxPages: 1 })).status).toBe("PAGE_LIMIT_REACHED");
+      expect(await database().query.select().from(schema.walletRecoveryCheckpoints).where(eq(schema.walletRecoveryCheckpoints.walletId, walletId))).toEqual([]);
     });
 
     it("does not race an unfinished initial history run, and skips inactive wallets", async () => {

@@ -9,7 +9,7 @@ import { normalizeLiveEvent, persistHistoricalTransaction, recordLiveEvents } fr
 import { CachingHistoricalPriceProvider, CoinbaseSolUsdProvider, RoutingHistoricalPriceProvider } from "@swi/market-data";
 import { MetricsRegistry } from "@swi/observability";
 import {
-  FINALITY_FIRST_DELAY_MS, FINALITY_RETRY_DELAY_MS, handleFinalityCheck, handleGapBackfill, handleNormalizeLiveEvent, handleReconcileSubscriptions, handleSweep, handleTokenLaunchEnrichment, handleWalletRecompute,
+  FINALITY_FIRST_DELAY_MS, FINALITY_RETRY_DELAY_MS, handleFinalityCheck, handleGapBackfill, handleGapScan, handleNormalizeLiveEvent, handleReconcileSubscriptions, handleSweep, handleTokenLaunchEnrichment, handleWalletRecompute,
   type LiveHandlerDependencies, type LiveScheduler,
 } from "./live-handlers.js";
 import { PostgresPriceStore } from "./price-store.js";
@@ -108,6 +108,15 @@ describe.skipIf(!context)("live handlers", () => {
       if (!affected) throw new Error("expected affected wallet");
       expect(notifier.messages[0]).toMatchObject({ deduplicationKey: `phase3-live:${affected.walletId}:${fixtures.pumpAmmBuy.signature}` });
       expect(notifier.messages[0]?.text).toContain("Status: Processed live");
+    });
+
+    it("never sends a live Telegram diagnostic when recovery arrived before a late webhook", async () => {
+      const walletId = await addWallet(database());
+      await database().query.transaction((transaction) => persistHistoricalTransaction(transaction, walletId, normalizeHeliusTransaction(FIXTURE_WALLET as WalletAddress, fixtures.pumpAmmBuy), "helius-gap-backfill"));
+      const notifier = new RecordingNotifier();
+      const result = await handleNormalizeLiveEvent(deps({ liveNotifier: notifier }), await recordOne(fixtures.pumpAmmBuy));
+      expect(result.affected[0]).toMatchObject({ created: false });
+      expect(notifier.messages).toEqual([]);
     });
 
     it("isolates Telegram failure after persistence and logs only safe identifiers", async () => {
@@ -284,6 +293,18 @@ describe.skipIf(!context)("live handlers", () => {
   });
 
   describe("recovery and maintenance", () => {
+    it("shadows a jittered integrity plan while retaining the legacy per-wallet scan", async () => {
+      const walletId = await addWallet(database());
+      await database().query.insert(schema.walletLiveMonitoring).values({ walletId, providerConfirmedAt: ASOF });
+      const seeded = await handleGapScan(deps({ recoveryIntegrityIntervalMs: 24 * 60 * 60_000, recoveryShadowMode: true }));
+      expect(seeded).toMatchObject({ scheduled: 1, shadowSeeded: 1, shadowPlanned: 0 });
+      scheduler.calls.length = 0;
+      const planned = await handleGapScan(deps({ now: () => new Date(ASOF.getTime() + 24 * 60 * 60_000), recoveryIntegrityIntervalMs: 24 * 60 * 60_000, recoveryShadowMode: true }));
+      expect(planned).toMatchObject({ scheduled: 1, shadowPlanned: 1 });
+      expect(scheduler.of("gap")).toHaveLength(1);
+      expect(await database().query.select().from(schema.liveRecoveryTasks)).toHaveLength(1);
+    });
+
     it("the sweeper requeues stuck events and unchecked confirmed transactions", async () => {
       await addWallet(database());
       const stuck = await recordOne(fixtures.pumpAmmBuy);

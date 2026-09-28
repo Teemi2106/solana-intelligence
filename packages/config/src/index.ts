@@ -5,6 +5,8 @@ const booleanFromString = z
   .default("false")
   .transform((value) => value === "true");
 
+const integerFromString = (fallback: number) => z.coerce.number().int().positive().default(fallback);
+
 const optionalNonEmptyString = <Schema extends z.ZodType<string>>(
   schema: Schema,
 ) =>
@@ -44,6 +46,8 @@ const baseSchema = z.object({
     .default("info"),
   SENTRY_DSN: optionalNonEmptyString(z.url()),
   ENABLE_LIVE_INGESTION: booleanFromString,
+  RECOVERY_INTEGRITY_INTERVAL_HOURS: integerFromString(24).pipe(z.number().min(24).max(24 * 30)),
+  RECOVERY_SHADOW_MODE: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   ENABLE_TELEGRAM: booleanFromString,
   HELIUS_API_KEY: optionalNonEmptyString(z.string().min(1)),
   HELIUS_WEBHOOK_SECRET: optionalNonEmptyString(z.string().min(32)),

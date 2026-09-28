@@ -53,6 +53,21 @@ No reconstruction, pricing, scoring or provider calls happen on this path. Measu
 
 BullMQ forbids `:` in custom ids, hence `-`. Exhausted jobs are written to `processing_failures` (safe metadata only) and, for events, `provider_events.status = FAILED`. Every job has an outer timeout; provider adapters add their own request timeouts. No database transaction spans a network call.
 
+### Listener-first recovery migration (shadow mode)
+
+The hourly per-wallet gap scan remains active during validation. In parallel, PostgreSQL now stores verified history boundaries in `wallet_recovery_checkpoints`, health/subscription recovery reasons in `live_recovery_windows`, and per-wallet shadow results in `live_recovery_tasks`. A completed history traversal advances its checkpoint only after reaching the previous verified time/signature boundary; provider errors and `PAGE_LIMIT_REACHED` never advance it. A two-minute indexing lag is deliberately left unverified for the next overlapping scan.
+
+`RECOVERY_INTEGRITY_INTERVAL_HOURS` defaults to 24 and accepts 24–720 hours. Wallets receive a stable jitter across that interval. `RECOVERY_SHADOW_MODE=true` records which wallets the new integrity planner would select, but the real work continues to come from the legacy hourly scanner. The legacy result is attached to each pending shadow task, allowing production comparison without a duplicate Helius request. Subscription additions, reactivation, and recovery from a recorded provider error also create shadow recovery windows and retain the existing immediate backfill.
+
+Shadow observability is available without Redis-backed metrics:
+
+* `recovery_shadow_plans_total{outcome}` and `recovery_shadow_wallets_total` show proposed 24-hour work.
+* `legacy_gap_scan_wallets_total` shows the hourly control volume.
+* `live_recovery_tasks` records pages, transactions seen/created and terminal shadow status.
+* `wallet_recovery_checkpoints` exposes checkpoint age, failures and next integrity due time.
+
+Do not disable the hourly scanner until at least 14 consecutive production days show: every due wallet planned within its configured interval plus scheduler tolerance; every shadow task observed by a successful legacy scan; zero checkpoint advancement on failed/page-limited scans; zero transactions found by a legacy scan outside the new planner's covered windows; no duplicate canonical trades, accounting rows or Telegram diagnostics; no unresolved recovery tasks/windows; and acceptable Helius pagination/rate-limit/error rates at the largest observed cohort. Only then may a separate reviewed change enable coordinator execution and retire the hourly scanner.
+
 ## Ordering and finality
 
 * Arrival order is never used. FIFO ordering is the Phase 2 rule: time, slot, acquisitions before disposals within a slot, signature.

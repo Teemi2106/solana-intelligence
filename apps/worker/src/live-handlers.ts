@@ -3,7 +3,7 @@ import type { BlockchainProvider, FinalityProvider, HistoricalPriceProvider, Liv
 import type { Database } from "@swi/db";
 import { schema } from "@swi/db";
 import {
-  backfillWalletGap, checkSignatureFinality, findStuckEvents, findUncheckedConfirmed, FINALITY_MAX_ATTEMPTS, normalizeLiveEvent, reconcileSubscriptions,
+  backfillWalletGap, checkSignatureFinality, createShadowRecoveryWindow, findStuckEvents, findUncheckedConfirmed, FINALITY_MAX_ATTEMPTS, normalizeLiveEvent, planShadowIntegrityRecovery, reconcileSubscriptions,
 } from "@swi/ingestion";
 import type { MetricsRegistry } from "@swi/observability";
 import { ensureTokenLaunchFacts, updateWalletIntelligence } from "./wallet-intelligence.js";
@@ -31,6 +31,8 @@ export interface LiveHandlerDependencies {
   readonly prices?: HistoricalPriceProvider;
   readonly liveNotifier?: NotificationProvider;
   readonly logger?: { warn(context: Readonly<Record<string, unknown>>, message: string): void };
+  readonly recoveryIntegrityIntervalMs?: number;
+  readonly recoveryShadowMode?: boolean;
 }
 
 const need = <T>(value: T | undefined, name: string): T => {
@@ -97,12 +99,18 @@ export async function handleFinalityCheck(dependencies: LiveHandlerDependencies,
 export async function handleReconcileSubscriptions(dependencies: LiveHandlerDependencies) {
   const result = await reconcileSubscriptions({ database: dependencies.database, provider: need(dependencies.subscriptions, "SUBSCRIPTION_PROVIDER"), enabled: dependencies.liveEnabled, metrics: dependencies.metrics, ...(dependencies.now ? { now: dependencies.now } : {}) });
   // Anything that was not watched a moment ago may have traded in the gap.
-  for (const walletId of result.newlyMonitoredWalletIds) await dependencies.scheduler.gapBackfill(walletId);
+  if (dependencies.recoveryShadowMode !== false && result.recoveryWalletIds.length > 0) {
+    const at = (dependencies.now ?? (() => new Date()))();
+    await createShadowRecoveryWindow({ database: dependencies.database, walletIds: result.recoveryWalletIds, reason: "SUBSCRIPTION_ADDED_OR_RECOVERED", unhealthyFrom: at, healthyAt: at });
+  }
+  for (const walletId of result.recoveryWalletIds) await dependencies.scheduler.gapBackfill(walletId);
   return result;
 }
 
 export async function handleGapBackfill(dependencies: LiveHandlerDependencies, walletId: string) {
-  const result = await backfillWalletGap({ database: dependencies.database, provider: need(dependencies.history, "HISTORY_PROVIDER"), metrics: dependencies.metrics, ...(dependencies.now ? { now: dependencies.now } : {}) }, walletId);
+  const result = await backfillWalletGap({ database: dependencies.database, provider: need(dependencies.history, "HISTORY_PROVIDER"), metrics: dependencies.metrics, ...(dependencies.now ? { now: dependencies.now } : {}) }, walletId, {
+    ...(dependencies.recoveryIntegrityIntervalMs ? { integrityIntervalMs: dependencies.recoveryIntegrityIntervalMs } : {}),
+  });
   if (result.transactionsCreated > 0) await dependencies.scheduler.recompute(walletId, "full");
   return result;
 }
@@ -121,11 +129,18 @@ export async function handleSweep(dependencies: LiveHandlerDependencies) {
 
 /** Schedules a gap backfill for every active wallet the provider is confirmed to watch (periodic safety net for lost deliveries). */
 export async function handleGapScan(dependencies: LiveHandlerDependencies) {
+  const shadow = dependencies.recoveryShadowMode === false ? { seeded: 0, planned: 0, windowId: null } : await planShadowIntegrityRecovery({
+    database: dependencies.database,
+    intervalMs: dependencies.recoveryIntegrityIntervalMs ?? 24 * 60 * 60_000,
+    metrics: dependencies.metrics,
+    ...(dependencies.now ? { now: dependencies.now } : {}),
+  });
   const wallets = await dependencies.database.query.select({ id: schema.walletLiveMonitoring.walletId }).from(schema.walletLiveMonitoring)
     .innerJoin(schema.trackedWallets, eq(schema.trackedWallets.id, schema.walletLiveMonitoring.walletId))
     .where(and(eq(schema.trackedWallets.status, "ACTIVE"), isNotNull(schema.walletLiveMonitoring.providerConfirmedAt)));
   for (const wallet of wallets) await dependencies.scheduler.gapBackfill(wallet.id);
-  return { scheduled: wallets.length };
+  dependencies.metrics.increment("legacy_gap_scan_wallets_total", {}, wallets.length);
+  return { scheduled: wallets.length, shadowSeeded: shadow.seeded, shadowPlanned: shadow.planned };
 }
 
 /**

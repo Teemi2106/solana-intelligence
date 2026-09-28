@@ -166,6 +166,8 @@ const handlers: LiveHandlerDependencies = {
   prices: createHistoricalPriceProvider(database),
   logger,
   ...(liveNotifier ? { liveNotifier } : {}),
+  recoveryIntegrityIntervalMs: config.RECOVERY_INTEGRITY_INTERVAL_HOURS * 60 * 60_000,
+  recoveryShadowMode: config.RECOVERY_SHADOW_MODE,
 };
 
 // An idle BullMQ worker otherwise wakes its blocking Redis command every five seconds.

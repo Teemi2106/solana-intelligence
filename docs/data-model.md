@@ -13,6 +13,7 @@
 | Research | `signal_outcomes` | Due horizons and post-detection observations |
 | Delivery | `alerts`, `alert_deliveries` | Persist-before-send, deduplicated notification lifecycle |
 | Operations | `processing_failures`, `system_health`, `audit_logs` | Recovery, readiness, and privileged-action traceability |
+| Live recovery | `wallet_recovery_checkpoints`, `live_recovery_windows`, `live_recovery_tasks` | Verified history boundaries, durable unhealthy intervals and shadow/coordinator work |
 | Historical ingestion | `wallet_ingestion_runs`, `wallet_ingestion_checkpoints` | Resumable page cursors, progress, and terminal state |
 | Accounting | `transaction_token_flows`, `wallet_inventory_lots`, `wallet_realizations`, `wallet_positions` | Normalized flows, FIFO provenance, realized results, and exposure |
 | Classification evidence | `wallet_classification_evidence` | Timestamped neutral evidence supporting classification |

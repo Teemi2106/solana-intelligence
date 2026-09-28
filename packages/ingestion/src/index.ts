@@ -1,5 +1,6 @@
 export * from "./finality";
 export * from "./gap-backfill";
+export * from "./recovery";
 export * from "./historical";
 export * from "./live-events";
 export * from "./subscriptions";

@@ -17,6 +17,8 @@ export interface SyncResult {
   readonly removed: readonly string[];
   /** Wallets the provider is now confirmed to watch that it was not watching before (need a gap backfill). */
   readonly newlyMonitoredWalletIds: readonly string[];
+  /** Wallets requiring recovery because monitoring was newly established or returned from a known unhealthy state. */
+  readonly recoveryWalletIds: readonly string[];
 }
 
 const sameSet = (left: readonly string[], right: readonly string[]) => left.length === right.length && left.every((value, index) => value === right[index]);
@@ -30,11 +32,14 @@ export async function reconcileSubscriptions(dependencies: { database: Database;
   const { database, provider } = dependencies;
   const now = dependencies.now ?? (() => new Date());
   const startedAt = now();
-  if (!dependencies.enabled) return { outcome: "SKIPPED_DISABLED", desired: 0, providerBefore: 0, added: [], removed: [], newlyMonitoredWalletIds: [] };
+  if (!dependencies.enabled) return { outcome: "SKIPPED_DISABLED", desired: 0, providerBefore: 0, added: [], removed: [], newlyMonitoredWalletIds: [], recoveryWalletIds: [] };
 
   const wallets = await database.query.select({ id: schema.trackedWallets.id, address: schema.trackedWallets.address }).from(schema.trackedWallets).where(eq(schema.trackedWallets.status, "ACTIVE"));
   const desired = wallets.map((wallet) => wallet.address).sort();
   const idByAddress = new Map(wallets.map((wallet) => [wallet.address, wallet.id]));
+  const [previousSubscription] = await database.query.select({ status: schema.providerSubscriptions.status }).from(schema.providerSubscriptions)
+    .where(and(eq(schema.providerSubscriptions.provider, PROVIDER), eq(schema.providerSubscriptions.kind, KIND))).limit(1);
+  const providerWasUnhealthy = previousSubscription?.status === "ERROR" || previousSubscription?.status === "DISABLED_BY_PROVIDER";
   const [run] = await database.query.insert(schema.providerSyncRuns).values({ provider: PROVIDER, startedAt, outcome: "RUNNING", desiredCount: desired.length }).returning({ id: schema.providerSyncRuns.id });
 
   let state: LiveSubscriptionState | null = null;
@@ -85,7 +90,9 @@ export async function reconcileSubscriptions(dependencies: { database: Database;
       if (run) await transaction.update(schema.providerSyncRuns).set({ finishedAt: confirmedAt, outcome, added: added.length, removed: removed.length, providerCount: state?.addresses.length ?? 0 }).where(eq(schema.providerSyncRuns.id, run.id));
     });
     dependencies.metrics?.increment("provider_sync_total", { outcome });
-    return { outcome, desired: desired.length, providerBefore: before.length, added, removed, newlyMonitoredWalletIds: added.flatMap((address) => idByAddress.get(address) ?? []) };
+    const newlyMonitoredWalletIds = added.flatMap((address) => idByAddress.get(address) ?? []);
+    const recoveryWalletIds = outcome === "REACTIVATED" || providerWasUnhealthy ? wallets.map((wallet) => wallet.id) : newlyMonitoredWalletIds;
+    return { outcome, desired: desired.length, providerBefore: before.length, added, removed, newlyMonitoredWalletIds, recoveryWalletIds };
   } catch (error) {
     const code = error instanceof SyncError ? error.code : (error as { code?: string }).code ?? (error instanceof Error ? error.name : "UNKNOWN");
     if (run) await database.query.update(schema.providerSyncRuns).set({ finishedAt: now(), outcome: "FAILED", errorCode: code, providerCount: before.length }).where(eq(schema.providerSyncRuns.id, run.id));

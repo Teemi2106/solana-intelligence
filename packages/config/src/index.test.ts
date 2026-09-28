@@ -64,4 +64,11 @@ describe("parseConfig", () => {
       "https://example.com/api/webhooks/helius",
     );
   });
+
+  it("defaults recovery to 24-hour shadow mode and accepts evidence-based longer intervals", () => {
+    expect(parseConfig(valid)).toMatchObject({ RECOVERY_INTEGRITY_INTERVAL_HOURS: 24, RECOVERY_SHADOW_MODE: true });
+    expect(parseConfig({ ...valid, RECOVERY_INTEGRITY_INTERVAL_HOURS: "168", RECOVERY_SHADOW_MODE: "false" }))
+      .toMatchObject({ RECOVERY_INTEGRITY_INTERVAL_HOURS: 168, RECOVERY_SHADOW_MODE: false });
+    expect(() => parseConfig({ ...valid, RECOVERY_INTEGRITY_INTERVAL_HOURS: "12" })).toThrow();
+  });
 });
