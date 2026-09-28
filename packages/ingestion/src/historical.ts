@@ -8,6 +8,7 @@ import { persistNormalizedTransaction, type DbTransaction, type IngestionSource,
 export interface WalletHistoryPageResult {
   readonly nextCursor: string | null;
   readonly completed: boolean;
+  readonly enrichmentRequestIds: readonly string[];
 }
 
 /**
@@ -33,17 +34,21 @@ export async function ingestWalletHistoryPage(dependencies: { database: Database
     .where(and(eq(schema.walletIngestionRuns.id, input.runId), eq(schema.walletIngestionRuns.walletId, input.walletId))).limit(1);
   if (!row) throw new Error("WALLET_INGESTION_RUN_NOT_FOUND");
   if (row.wallet.status !== "ACTIVE") throw new Error("WALLET_NOT_ACTIVE");
-  if (row.run.status === "COMPLETED") return { nextCursor: null, completed: true };
+  if (row.run.status === "COMPLETED") return { nextCursor: null, completed: true, enrichmentRequestIds: [] };
 
   await dependencies.database.query.update(schema.walletIngestionRuns).set({ status: "RUNNING", startedAt: row.run.startedAt ?? new Date(), heartbeatAt: new Date(), lastErrorCode: null }).where(eq(schema.walletIngestionRuns.id, input.runId));
   const page = await dependencies.provider.getWalletHistory(row.wallet.address as WalletAddress, { ...(row.run.cursor ? { cursor: row.run.cursor } : {}), limit: 100 });
   const completed = page.nextCursor === undefined;
 
-  await dependencies.database.query.transaction(async (transaction) => {
+  const enrichmentRequestIds = await dependencies.database.query.transaction(async (transaction) => {
     let stored = 0;
+    const requestIds: string[] = [];
     for (const chainTransaction of page.transactions) {
       const persisted = await persistHistoricalTransaction(transaction, row.wallet.id, chainTransaction);
-      if (persisted) stored += 1;
+      if (persisted) {
+        stored += 1;
+        requestIds.push(...persisted.enrichmentRequestIds);
+      }
     }
     await transaction.update(schema.walletIngestionRuns).set({
       status: completed ? "COMPLETED" : "RUNNING",
@@ -56,6 +61,7 @@ export async function ingestWalletHistoryPage(dependencies: { database: Database
       updatedAt: new Date(),
     }).where(eq(schema.walletIngestionRuns.id, input.runId));
     await transaction.insert(schema.walletIngestionCheckpoints).values({ walletId: row.wallet.id, provider: "helius", cursor: page.nextCursor ?? null, completed }).onConflictDoUpdate({ target: schema.walletIngestionCheckpoints.walletId, set: { cursor: page.nextCursor ?? null, completed, updatedAt: new Date() } });
+    return requestIds;
   });
-  return { nextCursor: page.nextCursor ?? null, completed };
+  return { nextCursor: page.nextCursor ?? null, completed, enrichmentRequestIds };
 }

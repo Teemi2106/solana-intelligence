@@ -49,7 +49,18 @@ export const jobIds = {
   sweep: (now: Date) => `sweep-${String(bucket(now, 5 * 60))}`,
   gapScan: (now: Date) => `gap-scan-${String(bucket(now, 60 * 60))}`,
   tokenLaunch: (walletId: string, now: Date) => `token-launch-${walletId}-${String(bucket(now, 300))}`,
+  tokenIntelligence: (requestId: string, now: Date) => `token-intelligence-${requestId}-${String(bucket(now, 300))}`,
 };
+
+export async function enqueueTokenIntelligence(queues: Pick<AppQueues, "analysis">, requestIds: readonly string[]): Promise<void> {
+  if (requestIds.length === 0) return;
+  const now = new Date();
+  await queues.analysis.addBulk([...new Set(requestIds)].map((requestId) => ({
+    name: "token-intelligence",
+    data: { requestId },
+    opts: { jobId: jobIds.tokenIntelligence(requestId, now), attempts: 4, backoff: { type: "exponential", delay: 5_000 } },
+  })));
+}
 
 export async function enqueueNormalizeLiveEvents(queues: Pick<AppQueues, "transactionIngestion">, providerEventIds: readonly string[]): Promise<void> {
   if (providerEventIds.length === 0) return;

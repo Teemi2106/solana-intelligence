@@ -30,6 +30,10 @@ Phase 2 adds `packages/market-data` (historical USD price providers, cache) and 
 
 Phase 3 adds `packages/ingestion` (shared transaction store, webhook handler, live-event normalization, finality, subscription reconciliation, gap backfill). See `docs/live-ingestion.md`.
 
+Phase 4 extends `packages/market-data` with lossless DexScreener pool observations and `packages/blockchain` with Helius
+mint/holder evidence. Token discovery transactionally writes a PostgreSQL enrichment outbox; the existing analysis worker
+processes it without adding another Worker or token polling loop. See `docs/token-intelligence.md`.
+
 ## Provider boundaries
 
 Domain services consume `BlockchainProvider`, `MarketDataProvider`, and `NotificationProvider` ports. Provider adapters own authentication, timeouts, rate-limit interpretation, DTO validation, and translation. Provider DTOs never enter scoring or persistence APIs directly. Queue payloads contain stable internal IDs, not large external payloads.

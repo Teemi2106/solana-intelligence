@@ -2,6 +2,7 @@ import { UnrecoverableError, Worker } from "bullmq";
 import {
   HeliusBlockchainProvider,
   HeliusRpcClient,
+  HeliusTokenIntelligenceProvider,
   HeliusWebhookManager,
   ProviderRequestError,
 } from "@swi/blockchain";
@@ -19,6 +20,7 @@ import {
   enqueueFinalityCheck,
   enqueueNormalizeLiveEvents,
   enqueueReconcileSubscriptions,
+  enqueueTokenIntelligence,
   enqueueWalletRecompute,
   finalityCheckJob,
   gapBackfillJob,
@@ -31,6 +33,7 @@ import {
   RedisStartupError,
   sanitizeRedisFailure,
   tokenLaunchEnrichmentJob,
+  tokenIntelligenceJob,
   verifyRedisStartup,
   walletRecomputeJob,
 } from "@swi/queue";
@@ -54,6 +57,8 @@ import {
 } from "./live-handlers.js";
 import { createHistoricalPriceProvider } from "./price-provider.js";
 import { createTelegramNotifier } from "./telegram-notifier.js";
+import { enrichTokenRequest, findDueTokenEnrichmentRequests } from "./token-intelligence.js";
+import { DexScreenerTokenPoolProvider } from "@swi/market-data";
 
 const config = parseConfig(process.env);
 const liveEnabled = config.ENABLE_LIVE_INGESTION;
@@ -110,6 +115,12 @@ const helius = config.HELIUS_API_KEY
 const rpc = config.HELIUS_API_KEY
   ? new HeliusRpcClient({ apiKey: config.HELIUS_API_KEY })
   : undefined;
+const tokenChainProvider = config.ENABLE_TOKEN_INTELLIGENCE && config.HELIUS_API_KEY
+  ? new HeliusTokenIntelligenceProvider({ apiKey: config.HELIUS_API_KEY })
+  : undefined;
+const tokenMarketProvider = config.ENABLE_TOKEN_INTELLIGENCE
+  ? new DexScreenerTokenPoolProvider()
+  : undefined;
 // Subscriptions are only ever created when live ingestion is enabled (config validation guarantees the settings exist).
 const subscriptions =
   liveEnabled &&
@@ -154,6 +165,7 @@ const scheduler: LiveScheduler = {
       },
     );
   },
+  enrichTokenRequests: (requestIds) => config.ENABLE_TOKEN_INTELLIGENCE ? enqueueTokenIntelligence(queues, requestIds) : Promise.resolve(),
 };
 const handlers: LiveHandlerDependencies = {
   database,
@@ -201,6 +213,14 @@ const observe = (
     job: job?.name ?? "unknown",
   });
 };
+
+if (config.ENABLE_TOKEN_INTELLIGENCE) {
+  // Durable outbox recovery only: this republishes explicit pending intent and never scans or refreshes tokens globally.
+  scheduleSafetyJob(60_000, async () => {
+    const requestIds = await findDueTokenEnrichmentRequests(database, 100);
+    if (requestIds.length > 0) await enqueueTokenIntelligence(queues, requestIds);
+  });
+}
 
 const observeWorkerRedisErrors = (worker: Worker, queue: string): void => {
   worker.on("error", (error) => {
@@ -263,6 +283,13 @@ const analysisWorker = new Worker(
             await queues.analysis.add("wallet-history", payload, {
               jobId: `wallet-history-${payload.runId}-${result.nextCursor.slice(0, 32)}`,
             });
+          if (result.enrichmentRequestIds.length > 0) {
+            try {
+              await scheduler.enrichTokenRequests(result.enrichmentRequestIds);
+            } catch (error) {
+              logger.warn({ ...errorDetails(error), requestCount: result.enrichmentRequestIds.length }, "token enrichment enqueue deferred to durable recovery");
+            }
+          }
           return;
         }
         case "wallet-recompute": {
@@ -291,6 +318,24 @@ const analysisWorker = new Worker(
             600_000,
             "TOKEN_LAUNCH",
           );
+          return;
+        }
+        case "token-intelligence": {
+          const payload = tokenIntelligenceJob.parse(job.data);
+          if (!tokenChainProvider || !tokenMarketProvider) throw new UnrecoverableError("TOKEN_INTELLIGENCE_NOT_CONFIGURED");
+          const result = await withTimeout(enrichTokenRequest({
+            database,
+            identity: tokenChainProvider,
+            holders: tokenChainProvider,
+            markets: tokenMarketProvider,
+            freshness: {
+              marketMs: config.TOKEN_MARKET_FRESHNESS_MINUTES * 60_000,
+              holdersMs: config.TOKEN_HOLDER_FRESHNESS_HOURS * 60 * 60_000,
+              metadataMs: config.TOKEN_METADATA_FRESHNESS_HOURS * 60 * 60_000,
+              authoritiesMs: config.TOKEN_AUTHORITIES_FRESHNESS_HOURS * 60 * 60_000,
+            },
+          }, payload.requestId), 180_000, "TOKEN_INTELLIGENCE");
+          logger.info({ requestId: payload.requestId, status: result.status, components: result.components }, "token intelligence processed");
           return;
         }
         default:

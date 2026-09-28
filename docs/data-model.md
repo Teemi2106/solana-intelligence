@@ -8,7 +8,8 @@
 | Time-versioned intelligence | `wallet_scores`, `wallet_score_versions`, `wallet_classifications`, `wallet_performance_snapshots` | Reproducible as-of scoring without look-ahead |
 | Relationships | `wallet_relationships` | Evidence-bearing, confidence-scored observations; never asserted ownership |
 | Chain facts | `provider_events`, `wallet_transactions`, `wallet_trades`, `tokens` | Idempotent raw summaries and normalized effects |
-| Token state | `token_market_snapshots`, `token_risk_snapshots` | Point-in-time market and observable risk facts |
+| Token state | `token_identity_snapshots`, `token_market_snapshots`, `token_pool_snapshots`, `token_holder_snapshots`, `token_holder_top_owners`, `token_risk_snapshots` | Point-in-time provider evidence and evidence-linked indicators; no opaque risk score |
+| Token enrichment | `token_discovery_evidence`, `token_enrichment_requests` | Tiered discovery provenance and durable/coalesced asynchronous intent |
 | Signals | `signals`, `signal_wallets`, `signal_snapshots`, `signal_score_versions` | Immutable detection state and exact contributing evidence |
 | Research | `signal_outcomes` | Due horizons and post-detection observations |
 | Delivery | `alerts`, `alert_deliveries` | Persist-before-send, deduplicated notification lifecycle |

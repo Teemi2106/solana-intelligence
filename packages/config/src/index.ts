@@ -48,6 +48,11 @@ const baseSchema = z.object({
   ENABLE_LIVE_INGESTION: booleanFromString,
   RECOVERY_INTEGRITY_INTERVAL_HOURS: integerFromString(24).pipe(z.number().min(24).max(24 * 30)),
   RECOVERY_SHADOW_MODE: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  ENABLE_TOKEN_INTELLIGENCE: booleanFromString,
+  TOKEN_MARKET_FRESHNESS_MINUTES: integerFromString(5).pipe(z.number().min(1).max(60)),
+  TOKEN_HOLDER_FRESHNESS_HOURS: integerFromString(24).pipe(z.number().min(1).max(24 * 30)),
+  TOKEN_METADATA_FRESHNESS_HOURS: integerFromString(24).pipe(z.number().min(1).max(24 * 30)),
+  TOKEN_AUTHORITIES_FRESHNESS_HOURS: integerFromString(6).pipe(z.number().min(1).max(24 * 30)),
   ENABLE_TELEGRAM: booleanFromString,
   HELIUS_API_KEY: optionalNonEmptyString(z.string().min(1)),
   HELIUS_WEBHOOK_SECRET: optionalNonEmptyString(z.string().min(32)),
@@ -81,6 +86,9 @@ export function parseConfig(environment: NodeJS.ProcessEnv): AppConfig {
     throw new Error(
       "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required when Telegram is enabled",
     );
+  }
+  if (config.ENABLE_TOKEN_INTELLIGENCE && !config.HELIUS_API_KEY) {
+    throw new Error("HELIUS_API_KEY is required when token intelligence is enabled");
   }
   return config;
 }

@@ -33,7 +33,12 @@ class RecordingScheduler implements LiveScheduler {
   finalityCheck(signature: string, attempt: number, delayMs: number) { return this.record("finality", signature, attempt, delayMs); }
   gapBackfill(walletId: string) { return this.record("gap", walletId); }
   enrichLaunchFacts(walletId: string) { return this.record("enrich", walletId); }
+  enrichTokenRequests(requestIds: readonly string[]) { return this.record("token-intelligence", ...requestIds); }
   of(kind: string) { return this.calls.filter((call) => call.kind === kind); }
+}
+
+class FailingEnrichmentScheduler extends RecordingScheduler {
+  override enrichTokenRequests() { return Promise.reject(new Error("REDIS_SECRET_SHOULD_NOT_LEAK")); }
 }
 
 class RecordingNotifier implements NotificationProvider {
@@ -128,6 +133,15 @@ describe.skipIf(!context)("live handlers", () => {
       expect((await database().query.select().from(schema.providerEvents))[0]).toMatchObject({ status: "PROCESSED" });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
+    });
+
+    it("keeps ingestion successful when Phase 4 enqueue fails because intent is durable", async () => {
+      await addWallet(database());
+      const warn = vi.fn();
+      await expect(handleNormalizeLiveEvent(deps({ scheduler: new FailingEnrichmentScheduler(), logger: { warn } }), await recordOne(fixtures.pumpAmmBuy))).resolves.toMatchObject({ outcome: "PROCESSED" });
+      expect((await database().query.select().from(schema.walletTransactions))).toHaveLength(1);
+      expect((await database().query.select().from(schema.tokenEnrichmentRequests)).length).toBeGreaterThan(0);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("REDIS_SECRET_SHOULD_NOT_LEAK");
     });
 
     it("schedules a finality check per new transaction and price-only recompute per wallet, never a full rebuild", async () => {

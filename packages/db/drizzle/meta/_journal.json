@@ -50,6 +50,13 @@
       "when": 1790576468764,
       "tag": "0006_reflective_magus",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790594067086,
+      "tag": "0007_glorious_boomer",
+      "breakpoints": true
     }
   ]
 }

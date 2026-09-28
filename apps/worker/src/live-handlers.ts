@@ -16,6 +16,7 @@ export interface LiveScheduler {
   finalityCheck(signature: string, attempt: number, delayMs: number): Promise<void>;
   gapBackfill(walletId: string): Promise<void>;
   enrichLaunchFacts(walletId: string): Promise<void>;
+  enrichTokenRequests(requestIds: readonly string[]): Promise<void>;
 }
 
 export interface LiveHandlerDependencies {
@@ -70,6 +71,14 @@ export async function handleNormalizeLiveEvent(dependencies: LiveHandlerDependen
   }
   // Pricing only: confirmed trades are shown live but do not feed accounting until finalized.
   for (const walletId of wallets) await dependencies.scheduler.recompute(walletId, "price-only");
+  const enrichmentRequestIds = result.affected.flatMap((item) => item.enrichmentRequestIds);
+  if (enrichmentRequestIds.length > 0) {
+    try {
+      await dependencies.scheduler.enrichTokenRequests(enrichmentRequestIds);
+    } catch {
+      dependencies.logger?.warn({ requestCount: enrichmentRequestIds.length }, "token enrichment enqueue deferred to durable recovery");
+    }
+  }
   return result;
 }
 

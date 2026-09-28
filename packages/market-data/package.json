@@ -4,7 +4,17 @@
   "private": true,
   "type": "module",
   "exports": "./src/index.ts",
-  "scripts": { "typecheck": "tsc -b", "build": "tsc -b" },
-  "dependencies": { "@swi/domain": "*", "zod": "latest" },
-  "devDependencies": { "typescript": "latest", "vitest": "latest" }
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@swi/domain": "*",
+    "lossless-json": "^4.3.1",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "vitest": "latest"
+  }
 }

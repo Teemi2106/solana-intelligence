@@ -71,4 +71,15 @@ describe("parseConfig", () => {
       .toMatchObject({ RECOVERY_INTEGRITY_INTERVAL_HOURS: 168, RECOVERY_SHADOW_MODE: false });
     expect(() => parseConfig({ ...valid, RECOVERY_INTEGRITY_INTERVAL_HOURS: "12" })).toThrow();
   });
+
+  it("defaults Phase 4 freshness without enabling enrichment and requires Helius when enabled", () => {
+    expect(parseConfig(valid)).toMatchObject({
+      ENABLE_TOKEN_INTELLIGENCE: false,
+      TOKEN_MARKET_FRESHNESS_MINUTES: 5,
+      TOKEN_HOLDER_FRESHNESS_HOURS: 24,
+      TOKEN_METADATA_FRESHNESS_HOURS: 24,
+      TOKEN_AUTHORITIES_FRESHNESS_HOURS: 6,
+    });
+    expect(() => parseConfig({ ...valid, ENABLE_TOKEN_INTELLIGENCE: "true" })).toThrow(/HELIUS_API_KEY/);
+  });
 });

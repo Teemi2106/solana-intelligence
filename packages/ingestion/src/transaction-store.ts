@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { reconstructSwap, type HistoricalWalletTransaction } from "@swi/domain";
+import { canonicalStablecoins, reconstructSwap, WRAPPED_SOL_MINT, type HistoricalWalletTransaction, type TokenEnrichmentTier } from "@swi/domain";
 import type { Database } from "@swi/db";
 import { schema } from "@swi/db";
 
@@ -15,6 +15,7 @@ export interface PersistedTransaction {
   readonly finality: Finality;
   readonly tradesCreated: number;
   readonly kind: string;
+  readonly enrichmentRequestIds: readonly string[];
 }
 
 /**
@@ -51,11 +52,10 @@ export async function persistNormalizedTransaction(
     if (!existing) throw new Error("WALLET_TRANSACTION_CONFLICT_WITHOUT_ROW");
     if (existing.finality === "confirmed" && input.finality === "finalized") {
       await transaction.update(schema.walletTransactions).set({ finality: "finalized", finalizedAt: new Date() }).where(and(eq(schema.walletTransactions.id, existing.id), eq(schema.walletTransactions.finality, "confirmed")));
-      return { created: false, transactionId: existing.id, finality: "finalized", tradesCreated: 0, kind: existing.kind };
+      return { created: false, transactionId: existing.id, finality: "finalized", tradesCreated: 0, kind: existing.kind, enrichmentRequestIds: [] };
     }
-    return { created: false, transactionId: existing.id, finality: existing.finality as Finality, tradesCreated: 0, kind: existing.kind };
+    return { created: false, transactionId: existing.id, finality: existing.finality as Finality, tradesCreated: 0, kind: existing.kind, enrichmentRequestIds: [] };
   }
-  if (!chainTransaction.succeeded) return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated: 0, kind: reconstruction.kind };
 
   const tokenIds = new Map<string, string>();
   for (const [flowIndex, flow] of chainTransaction.tokenFlows.entries()) {
@@ -63,8 +63,31 @@ export async function persistNormalizedTransaction(
     token ??= (await transaction.select().from(schema.tokens).where(eq(schema.tokens.mint, flow.mint)).limit(1))[0];
     if (!token) throw new Error("TOKEN_UPSERT_FAILED");
     tokenIds.set(flow.mint, token.id);
-    await transaction.insert(schema.transactionTokenFlows).values({ transactionId: inserted.id, tokenId: token.id, direction: flow.direction, rawAmount: flow.rawAmount.toString(), decimals: flow.decimals, account: flow.account, counterparty: flow.counterparty, flowIndex }).onConflictDoNothing();
+    if (chainTransaction.succeeded)
+      await transaction.insert(schema.transactionTokenFlows).values({ transactionId: inserted.id, tokenId: token.id, direction: flow.direction, rawAmount: flow.rawAmount.toString(), decimals: flow.decimals, account: flow.account, counterparty: flow.counterparty, flowIndex }).onConflictDoNothing();
   }
+  const meaningful = new Set(reconstruction.legs.map((leg) => leg.tokenMint));
+  const routed = new Set(reconstruction.legs.flatMap((leg) => leg.routeAssets));
+  const enrichmentRequestIds: string[] = [];
+  const freshnessBucket = new Date(Math.floor(Date.now() / 300_000) * 300_000);
+  for (const [mint, tokenId] of tokenIds) {
+    const tier: TokenEnrichmentTier = !chainTransaction.succeeded
+      ? "DISCOVERY_ONLY"
+      : meaningful.has(mint) && mint !== WRAPPED_SOL_MINT && !canonicalStablecoins.has(mint)
+        ? "FULL"
+        : "REDUCED";
+    await transaction.insert(schema.tokenDiscoveryEvidence).values({ tokenId, transactionId: inserted.id, tier, transactionSucceeded: chainTransaction.succeeded, observedAt: chainTransaction.occurredAt }).onConflictDoNothing();
+    if (tier === "DISCOVERY_ONLY") continue;
+    const [request] = await transaction.insert(schema.tokenEnrichmentRequests).values({
+      tokenId,
+      tier,
+      reasons: [meaningful.has(mint) ? "WALLET_ASSET" : routed.has(mint) ? "ROUTING_INTERMEDIATE" : "OBSERVED_QUOTE_ASSET"],
+      requestedComponents: tier === "FULL" ? ["IDENTITY", "MARKET", "HOLDERS"] : ["IDENTITY"],
+      freshnessBucket,
+    }).onConflictDoNothing().returning({ id: schema.tokenEnrichmentRequests.id });
+    if (request) enrichmentRequestIds.push(request.id);
+  }
+  if (!chainTransaction.succeeded) return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated: 0, kind: reconstruction.kind, enrichmentRequestIds };
   let tradesCreated = 0;
   for (const leg of reconstruction.legs) {
     const tokenId = tokenIds.get(leg.tokenMint);
@@ -84,5 +107,5 @@ export async function persistNormalizedTransaction(
     }).onConflictDoNothing().returning({ id: schema.walletTrades.id });
     tradesCreated += rows.length;
   }
-  return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated, kind: reconstruction.kind };
+  return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated, kind: reconstruction.kind, enrichmentRequestIds };
 }
