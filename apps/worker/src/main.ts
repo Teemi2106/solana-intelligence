@@ -115,6 +115,9 @@ const helius = config.HELIUS_API_KEY
 const rpc = config.HELIUS_API_KEY
   ? new HeliusRpcClient({ apiKey: config.HELIUS_API_KEY })
   : undefined;
+const canonicalEvidenceRpc = config.HELIUS_API_KEY
+  ? new HeliusRpcClient({ apiKey: config.HELIUS_API_KEY, timeoutMs: 5_000, maxAttempts: 2 })
+  : undefined;
 const tokenChainProvider = config.ENABLE_TOKEN_INTELLIGENCE && config.HELIUS_API_KEY
   ? new HeliusTokenIntelligenceProvider({ apiKey: config.HELIUS_API_KEY })
   : undefined;
@@ -175,6 +178,7 @@ const handlers: LiveHandlerDependencies = {
   ...(helius ? { history: helius } : {}),
   ...(subscriptions ? { subscriptions } : {}),
   ...(rpc ? { finality: rpc, launch: rpc } : {}),
+  ...(canonicalEvidenceRpc ? { canonicalEvidence: canonicalEvidenceRpc } : {}),
   prices: createHistoricalPriceProvider(database),
   logger,
   ...(liveNotifier ? { liveNotifier } : {}),

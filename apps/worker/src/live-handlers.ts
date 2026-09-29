@@ -1,5 +1,5 @@
 import { and, eq, isNotNull } from "drizzle-orm";
-import type { BlockchainProvider, FinalityProvider, HistoricalPriceProvider, LiveSubscriptionProvider, NotificationProvider, TokenLaunchProvider } from "@swi/domain";
+import type { BlockchainProvider, CanonicalEconomicEvidenceProvider, EconomicAction, FinalityProvider, HistoricalPriceProvider, LiveSubscriptionProvider, NotificationProvider, TokenLaunchProvider } from "@swi/domain";
 import type { Database } from "@swi/db";
 import { schema } from "@swi/db";
 import {
@@ -28,6 +28,7 @@ export interface LiveHandlerDependencies {
   readonly history?: BlockchainProvider;
   readonly subscriptions?: LiveSubscriptionProvider;
   readonly finality?: FinalityProvider;
+  readonly canonicalEvidence?: CanonicalEconomicEvidenceProvider;
   readonly launch?: TokenLaunchProvider;
   readonly prices?: HistoricalPriceProvider;
   readonly liveNotifier?: NotificationProvider;
@@ -46,7 +47,7 @@ export const FINALITY_FIRST_DELAY_MS = 45_000;
 export const FINALITY_RETRY_DELAY_MS = 30_000;
 
 export async function handleNormalizeLiveEvent(dependencies: LiveHandlerDependencies, providerEventId: string) {
-  const result = await normalizeLiveEvent({ database: dependencies.database, metrics: dependencies.metrics, ...(dependencies.now ? { now: dependencies.now } : {}) }, providerEventId);
+  const result = await normalizeLiveEvent({ database: dependencies.database, metrics: dependencies.metrics, ...(dependencies.now ? { now: dependencies.now } : {}), ...(dependencies.canonicalEvidence ? { canonicalEvidence: dependencies.canonicalEvidence } : {}) }, providerEventId);
   const wallets = new Set<string>();
   for (const item of result.affected) {
     if (item.created) await dependencies.scheduler.finalityCheck(item.signature, 0, FINALITY_FIRST_DELAY_MS);
@@ -55,7 +56,7 @@ export async function handleNormalizeLiveEvent(dependencies: LiveHandlerDependen
       try {
         await dependencies.liveNotifier.deliver({
           deduplicationKey: `phase3-live:${item.walletId}:${item.signature}`,
-          severity: "INFO",
+          severity: item.economicActions.some((action) => action.action === "FULL_EXIT") ? "HIGH" : item.economicActions.some((action) => action.action === "PARTIAL_EXIT") ? "WATCH" : "INFO",
           text: liveActivityMessage(item),
         });
       } catch (error) {
@@ -84,18 +85,36 @@ export async function handleNormalizeLiveEvent(dependencies: LiveHandlerDependen
 
 const short = (value: string): string => value.length <= 16 ? value : `${value.slice(0, 8)}...${value.slice(-6)}`;
 
-export function liveActivityMessage(item: { walletAddress: string; transactionType: string; signature: string; occurredAt: Date }): string {
-  return [
-    "🎲 Degen Scout — Live Wallet Activity",
-    "",
-    `Wallet: ${short(item.walletAddress)}`,
-    `Type: ${item.transactionType}`,
-    `Signature: ${short(item.signature)}`,
-    "Status: Processed live",
-    `Time: ${item.occurredAt.toISOString()}`,
-    "",
-    "Live pipeline confirmed ✅",
-  ].join("\n");
+export function liveActivityMessage(item: { walletAddress: string; transactionType: string; signature: string; occurredAt: Date; economicActions: readonly EconomicAction[] }): string {
+  const actions = item.economicActions.length > 0 ? item.economicActions : [{ action: "UNRESOLVED", confidence: "INDETERMINATE", evidence: ["NO_PERSISTED_CLASSIFICATION"], tokenMint: null, rawTokenAmount: null, tokenDecimals: null, consideration: null, positionBeforeRaw: null, positionAfterRaw: null, positionImpactNumerator: null, positionImpactDenominator: null } satisfies EconomicAction];
+  const lines = actions.flatMap((action, index) => [
+    ...(index > 0 ? [""] : []),
+    `${actionIcon(action.action)} ${action.action.replaceAll("_", " ")}${action.tokenMint ? ` — ${short(action.tokenMint)}` : " — Native SOL"}`,
+    ...(action.rawTokenAmount !== null && action.tokenDecimals !== null ? [`Quantity: ${formatRaw(action.rawTokenAmount, action.tokenDecimals)}`] : []),
+    ...(action.positionImpactNumerator !== null && action.positionImpactDenominator !== null ? [`Position affected: ${formatPercent(action.positionImpactNumerator, action.positionImpactDenominator)}`] : []),
+    ...(action.consideration ? [`Consideration: ${formatRaw(action.consideration.rawAmount, action.consideration.decimals)} ${action.consideration.mint === "So11111111111111111111111111111111111111112" ? "SOL" : short(action.consideration.mint)}`] : []),
+    ...(action.positionAfterRaw !== null && action.tokenDecimals !== null ? [`Remaining tracked position: ${formatRaw(action.positionAfterRaw, action.tokenDecimals)}`] : []),
+    `Evidence: ${action.evidence.join(", ")}`,
+    `Confidence: ${action.confidence}`,
+  ]);
+  return ["🎲 Degen Scout — Live Economic Activity", "", `Wallet: ${short(item.walletAddress)}`, ...lines, "", `Provider type: ${item.transactionType} (provenance)`, `Signature: ${short(item.signature)}`, `Time: ${item.occurredAt.toISOString()}`].join("\n");
+}
+
+const actionIcon = (action: EconomicAction["action"]): string => action === "FULL_EXIT" ? "🔴" : action === "PARTIAL_EXIT" ? "🟠" : action === "BUY" ? "🟢" : action === "SELL" ? "🟡" : action === "ACCOUNT_CLOSE" ? "⚙️" : action === "UNRESOLVED" ? "⚪" : "🔵";
+
+function formatRaw(raw: bigint, decimals: number): string {
+  if (decimals === 0) return raw.toString();
+  const negative = raw < 0n;
+  const digits = (negative ? -raw : raw).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, -decimals);
+  const fraction = digits.slice(-decimals).replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+function formatPercent(numerator: bigint, denominator: bigint): string {
+  if (denominator <= 0n) return "indeterminate";
+  const hundredths = numerator * 10_000n / denominator;
+  return `${(hundredths / 100n).toString()}.${(hundredths % 100n).toString().padStart(2, "0")}%`;
 }
 
 export async function handleFinalityCheck(dependencies: LiveHandlerDependencies, input: { signature: string; attempt: number }) {

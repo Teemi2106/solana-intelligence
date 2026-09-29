@@ -1,6 +1,6 @@
 import { and, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { heliusLiveEventId, heliusTransaction, involvedAddresses, normalizeHeliusTransaction, payloadHash, type HeliusTransaction } from "@swi/blockchain";
-import type { WalletAddress } from "@swi/domain";
+import type { CanonicalEconomicEvidence, CanonicalEconomicEvidenceProvider, EconomicAction, WalletAddress } from "@swi/domain";
 import type { Database } from "@swi/db";
 import { schema } from "@swi/db";
 import type { MetricsRegistry } from "@swi/observability";
@@ -38,7 +38,7 @@ export async function recordLiveEvents(database: Database, transactions: readonl
 export interface NormalizeLiveEventResult {
   readonly outcome: "PROCESSED" | "ALREADY_PROCESSED" | "NOT_FOUND" | "INVALID_PAYLOAD" | "NO_TRACKED_WALLET";
   /** Wallets that gained at least one new transaction (need finality tracking / recompute). */
-  readonly affected: readonly { readonly walletId: string; readonly walletAddress: string; readonly signature: string; readonly transactionType: string; readonly occurredAt: Date; readonly tradesCreated: number; readonly created: boolean; readonly enrichmentRequestIds: readonly string[] }[];
+  readonly affected: readonly { readonly walletId: string; readonly walletAddress: string; readonly signature: string; readonly transactionType: string; readonly occurredAt: Date; readonly tradesCreated: number; readonly created: boolean; readonly enrichmentRequestIds: readonly string[]; readonly economicActions: readonly EconomicAction[] }[];
 }
 
 /**
@@ -46,7 +46,7 @@ export interface NormalizeLiveEventResult {
  * Safe to run twice, concurrently, or after the same transaction arrived through history: all writes are conflict-safe.
  * Makes no network calls.
  */
-export async function normalizeLiveEvent(dependencies: { database: Database; metrics?: MetricsRegistry; now?: () => Date }, providerEventId: string): Promise<NormalizeLiveEventResult> {
+export async function normalizeLiveEvent(dependencies: { database: Database; metrics?: MetricsRegistry; now?: () => Date; canonicalEvidence?: CanonicalEconomicEvidenceProvider }, providerEventId: string): Promise<NormalizeLiveEventResult> {
   const { database } = dependencies;
   const [event] = await database.query.select().from(schema.providerEvents).where(eq(schema.providerEvents.id, providerEventId)).limit(1);
   if (!event) return { outcome: "NOT_FOUND", affected: [] };
@@ -65,18 +65,29 @@ export async function normalizeLiveEvent(dependencies: { database: Database; met
   const wallets = await database.query.select({ id: schema.trackedWallets.id, address: schema.trackedWallets.address }).from(schema.trackedWallets)
     .where(and(inArray(schema.trackedWallets.address, addresses), eq(schema.trackedWallets.status, "ACTIVE")));
 
-  const affected: { walletId: string; walletAddress: string; signature: string; transactionType: string; occurredAt: Date; tradesCreated: number; created: boolean; enrichmentRequestIds: readonly string[] }[] = [];
+  const affected: { walletId: string; walletAddress: string; signature: string; transactionType: string; occurredAt: Date; tradesCreated: number; created: boolean; enrichmentRequestIds: readonly string[]; economicActions: readonly EconomicAction[] }[] = [];
   for (const wallet of wallets) {
     const chainTransaction = normalizeHeliusTransaction(wallet.address as WalletAddress, tx);
+    let canonicalEvidence: CanonicalEconomicEvidence | undefined;
+    if (dependencies.canonicalEvidence && tx.type === "UNKNOWN" && chainTransaction.tokenFlows.length === 0 && (chainTransaction.nativeTransferLamports ?? 0n) === 0n) {
+      try {
+        canonicalEvidence = await dependencies.canonicalEvidence.getEconomicEvidence(tx.signature, wallet.address as WalletAddress);
+        dependencies.metrics?.increment("canonical_economic_evidence_total", { outcome: canonicalEvidence.accountClosures.length > 0 ? "found" : "empty" });
+      } catch {
+        // A provider lookup cannot make durable webhook normalization fail. The classifier records UNRESOLVED.
+        dependencies.metrics?.increment("canonical_economic_evidence_total", { outcome: "unavailable" });
+      }
+    }
     const persisted = await database.query.transaction(async (transaction) => {
-      const result = await persistNormalizedTransaction(transaction, { walletId: wallet.id, providerEventId: event.id, chainTransaction, source: "helius-webhook", finality: "confirmed" });
+      const result = await persistNormalizedTransaction(transaction, { walletId: wallet.id, providerEventId: event.id, chainTransaction, source: "helius-webhook", finality: "confirmed", ...(canonicalEvidence ? { canonicalEvidence } : {}) });
       await transaction.insert(schema.walletLiveMonitoring).values({ walletId: wallet.id, lastEventAt: chainTransaction.occurredAt, lastSignature: chainTransaction.signature, lastSlot: chainTransaction.slot })
         .onConflictDoUpdate({ target: schema.walletLiveMonitoring.walletId, set: { lastEventAt: sql`greatest(${schema.walletLiveMonitoring.lastEventAt}, excluded.last_event_at)`, lastSignature: sql`case when ${schema.walletLiveMonitoring.lastSlot} is null or excluded.last_slot >= ${schema.walletLiveMonitoring.lastSlot} then excluded.last_signature else ${schema.walletLiveMonitoring.lastSignature} end`, lastSlot: sql`greatest(${schema.walletLiveMonitoring.lastSlot}, excluded.last_slot)`, updatedAt: new Date() } });
       return result;
     });
-    affected.push({ walletId: wallet.id, walletAddress: wallet.address, signature: tx.signature, transactionType: tx.type, occurredAt: chainTransaction.occurredAt, tradesCreated: persisted.tradesCreated, created: persisted.created, enrichmentRequestIds: persisted.enrichmentRequestIds });
+    affected.push({ walletId: wallet.id, walletAddress: wallet.address, signature: tx.signature, transactionType: tx.type, occurredAt: chainTransaction.occurredAt, tradesCreated: persisted.tradesCreated, created: persisted.created, enrichmentRequestIds: persisted.enrichmentRequestIds, economicActions: persisted.economicActions });
     dependencies.metrics?.increment("live_normalization_total", { outcome: persisted.created ? "created" : "existing", kind: persisted.kind });
     if (persisted.tradesCreated > 0) dependencies.metrics?.increment("live_trades_reconstructed_total", {}, persisted.tradesCreated);
+    for (const action of persisted.economicActions) dependencies.metrics?.increment("live_economic_actions_total", { action: action.action, confidence: action.confidence });
   }
   const now = (dependencies.now ?? (() => new Date()))();
   await database.query.update(schema.providerEvents).set({

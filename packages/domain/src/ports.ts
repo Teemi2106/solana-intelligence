@@ -1,4 +1,5 @@
 import type { HealthCheck, TokenMint, TransactionSignature, WalletAddress } from "./types";
+import type { CanonicalEconomicEvidence } from "./economic-action";
 
 export interface BlockchainProvider {
   getWalletHistory(address: WalletAddress, options?: { cursor?: string; limit?: number }): Promise<{
@@ -44,6 +45,8 @@ export interface HistoricalWalletTransaction {
   readonly feePayerIsWallet: boolean;
   readonly tokenFlows: readonly HistoricalTokenFlow[];
   readonly nativeSolDeltaLamports: bigint;
+  /** Direct native transfers involving the wallet; excludes fees, rent-only balance changes and unrelated accounts. */
+  readonly nativeTransferLamports?: bigint;
   readonly source: string;
   readonly settlement: HistoricalSettlementFacts;
   readonly quality: "HIGH" | "MEDIUM" | "LOW" | "INSUFFICIENT";
@@ -103,6 +106,10 @@ export type FinalityStatus = "NOT_FOUND" | "CONFIRMED" | "FINALIZED" | "FAILED";
 
 export interface FinalityProvider {
   getFinality(signatures: readonly string[]): Promise<ReadonlyMap<string, FinalityStatus>>;
+}
+
+export interface CanonicalEconomicEvidenceProvider {
+  getEconomicEvidence(signature: string, wallet: WalletAddress): Promise<CanonicalEconomicEvidence>;
 }
 
 export type TokenLaunchResult =

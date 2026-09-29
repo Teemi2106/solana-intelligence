@@ -35,3 +35,15 @@ describe("HeliusRpcClient token launch", () => {
     expect(await rpc(respond({ result: "nope" })).getFirstActivity("Mint111")).toEqual({ status: "UNAVAILABLE", reason: "INVALID_RESPONSE" });
   });
 });
+
+describe("HeliusRpcClient canonical economic evidence", () => {
+  it("extracts a Token-2022 close-account instruction with exact rent and zero pre-balance", async () => {
+    const request = respond({ result: {
+      meta: { preBalances: [445721394358, 1513840, 70128638], postBalances: [445722903198, 0, 70128638], preTokenBalances: [{ accountIndex: 1, mint: "CHyPGNd9d7enSG9MiFfbLaYN7PcP8Z7V4Jp2RH73pump", owner: "Wallet111", programId: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", uiTokenAmount: { amount: "0", decimals: 6 } }] },
+      transaction: { message: { accountKeys: [{ pubkey: "Wallet111" }, { pubkey: "TokenAccount111" }, { pubkey: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" }], instructions: [{ programId: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", parsed: { type: "closeAccount", info: { account: "TokenAccount111", destination: "Wallet111", owner: "Wallet111" } } }] } },
+    } });
+    expect(await rpc(request).getEconomicEvidence("signature", "Wallet111" as never)).toEqual({ accountClosures: [{
+      account: "TokenAccount111", mint: "CHyPGNd9d7enSG9MiFfbLaYN7PcP8Z7V4Jp2RH73pump", tokenProgram: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", preRawAmount: 0n, decimals: 6, rentReclaimedLamports: 1513840n,
+    }] });
+  });
+});

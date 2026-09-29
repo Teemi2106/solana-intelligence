@@ -118,6 +118,7 @@ export function normalizeHeliusTransaction(wallet: WalletAddress, transaction: H
   const nativeSolDeltaLamports = walletAccount
     ? BigInt(walletAccount.nativeBalanceChange)
     : transaction.nativeTransfers.reduce((sum, transfer) => sum + BigInt(transfer.toUserAccount === wallet ? transfer.amount : 0) - BigInt(transfer.fromUserAccount === wallet ? transfer.amount : 0), 0n);
+  const nativeTransferLamports = transaction.nativeTransfers.reduce((sum, transfer) => sum + BigInt(transfer.toUserAccount === wallet ? transfer.amount : 0) - BigInt(transfer.fromUserAccount === wallet ? transfer.amount : 0), 0n);
   if (transaction.type === "SWAP" && tokenFlows.length === 0) issues.push("NO_WALLET_TOKEN_FLOW");
   const settlement = extractSettlementFacts(wallet, transaction);
   return {
@@ -130,6 +131,7 @@ export function normalizeHeliusTransaction(wallet: WalletAddress, transaction: H
     feePayerIsWallet: transaction.feePayer === wallet,
     tokenFlows,
     nativeSolDeltaLamports,
+    nativeTransferLamports,
     source: "helius-enhanced-transactions",
     settlement,
     quality: issues.length === 0 ? "HIGH" : "LOW",

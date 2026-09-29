@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { canonicalStablecoins, reconstructSwap, WRAPPED_SOL_MINT, type HistoricalWalletTransaction, type TokenEnrichmentTier } from "@swi/domain";
+import { canonicalStablecoins, classifyEconomicActions, reconstructEconomicLegs, reconstructSwap, WRAPPED_SOL_MINT, type CanonicalEconomicEvidence, type EconomicAction, type HistoricalWalletTransaction, type PositionEvidence, type TokenEnrichmentTier } from "@swi/domain";
 import type { Database } from "@swi/db";
 import { schema } from "@swi/db";
 
@@ -16,6 +16,7 @@ export interface PersistedTransaction {
   readonly tradesCreated: number;
   readonly kind: string;
   readonly enrichmentRequestIds: readonly string[];
+  readonly economicActions: readonly EconomicAction[];
 }
 
 /**
@@ -27,7 +28,7 @@ export interface PersistedTransaction {
  */
 export async function persistNormalizedTransaction(
   transaction: DbTransaction,
-  input: { walletId: string; providerEventId: string; chainTransaction: HistoricalWalletTransaction; source: IngestionSource; finality: Finality },
+  input: { walletId: string; providerEventId: string; chainTransaction: HistoricalWalletTransaction; source: IngestionSource; finality: Finality; canonicalEvidence?: CanonicalEconomicEvidence },
 ): Promise<PersistedTransaction> {
   const { chainTransaction, walletId } = input;
   const reconstruction = reconstructSwap(chainTransaction);
@@ -38,6 +39,8 @@ export async function persistNormalizedTransaction(
     normalizedPayload: {
       providerType: chainTransaction.providerType, feeLamports: chainTransaction.feeLamports.toString(), feePayerIsWallet: chainTransaction.feePayerIsWallet,
       nativeSolDeltaLamports: chainTransaction.nativeSolDeltaLamports.toString(),
+      nativeTransferLamports: (chainTransaction.nativeTransferLamports ?? 0n).toString(),
+      canonicalEvidence: input.canonicalEvidence ? { accountClosures: input.canonicalEvidence.accountClosures.map((closure) => ({ ...closure, preRawAmount: closure.preRawAmount?.toString() ?? null, rentReclaimedLamports: closure.rentReclaimedLamports.toString() })) } : null,
       settlement: { venue: settlement.venue, walletTokenAccountRentLamports: settlement.walletTokenAccountRentLamports.toString(), counterpartyWsolDeltaLamports: settlement.counterpartyWsolDeltaLamports?.toString() ?? null, tipLamports: settlement.tipLamports.toString(), movedMints: settlement.movedMints },
       issues: [...chainTransaction.issues, ...reconstruction.issues],
     },
@@ -52,9 +55,9 @@ export async function persistNormalizedTransaction(
     if (!existing) throw new Error("WALLET_TRANSACTION_CONFLICT_WITHOUT_ROW");
     if (existing.finality === "confirmed" && input.finality === "finalized") {
       await transaction.update(schema.walletTransactions).set({ finality: "finalized", finalizedAt: new Date() }).where(and(eq(schema.walletTransactions.id, existing.id), eq(schema.walletTransactions.finality, "confirmed")));
-      return { created: false, transactionId: existing.id, finality: "finalized", tradesCreated: 0, kind: existing.kind, enrichmentRequestIds: [] };
+      return { created: false, transactionId: existing.id, finality: "finalized", tradesCreated: 0, kind: existing.kind, enrichmentRequestIds: [], economicActions: [] };
     }
-    return { created: false, transactionId: existing.id, finality: existing.finality as Finality, tradesCreated: 0, kind: existing.kind, enrichmentRequestIds: [] };
+    return { created: false, transactionId: existing.id, finality: existing.finality as Finality, tradesCreated: 0, kind: existing.kind, enrichmentRequestIds: [], economicActions: [] };
   }
 
   const tokenIds = new Map<string, string>();
@@ -87,9 +90,8 @@ export async function persistNormalizedTransaction(
     }).onConflictDoNothing().returning({ id: schema.tokenEnrichmentRequests.id });
     if (request) enrichmentRequestIds.push(request.id);
   }
-  if (!chainTransaction.succeeded) return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated: 0, kind: reconstruction.kind, enrichmentRequestIds };
   let tradesCreated = 0;
-  for (const leg of reconstruction.legs) {
+  if (chainTransaction.succeeded) for (const leg of reconstruction.legs) {
     const tokenId = tokenIds.get(leg.tokenMint);
     if (!tokenId) throw new Error("TRADE_TOKEN_NOT_FOUND");
     const rows = await transaction.insert(schema.walletTrades).values({
@@ -107,5 +109,56 @@ export async function persistNormalizedTransaction(
     }).onConflictDoNothing().returning({ id: schema.walletTrades.id });
     tradesCreated += rows.length;
   }
-  return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated, kind: reconstruction.kind, enrichmentRequestIds };
+  const economicActions = input.source === "helius-webhook"
+    ? await persistEconomicActions(transaction, { walletId, transactionId: inserted.id, chainTransaction, reconstruction, tokenIds, ...(input.canonicalEvidence ? { canonicalEvidence: input.canonicalEvidence } : {}) })
+    : [];
+  return { created: true, transactionId: inserted.id, finality: input.finality, tradesCreated, kind: reconstruction.kind, enrichmentRequestIds, economicActions };
+}
+
+const ECONOMIC_ACTION_CLASSIFICATION_VERSION = "live-economic-v1";
+
+async function persistEconomicActions(transaction: DbTransaction, input: {
+  walletId: string;
+  transactionId: string;
+  chainTransaction: HistoricalWalletTransaction;
+  reconstruction: ReturnType<typeof reconstructSwap>;
+  tokenIds: Map<string, string>;
+  canonicalEvidence?: CanonicalEconomicEvidence;
+}): Promise<readonly EconomicAction[]> {
+  // Phase 2 deliberately retains its provider-type gate. Live classification may recover an otherwise UNKNOWN
+  // swap only when the same deterministic reconstruction establishes attributable consideration.
+  const reconstructedLegs = reconstructEconomicLegs(input.chainTransaction, input.reconstruction);
+  for (const closure of input.canonicalEvidence?.accountClosures ?? []) {
+    if (!closure.mint || input.tokenIds.has(closure.mint)) continue;
+    let [token] = await transaction.insert(schema.tokens).values({ mint: closure.mint, decimals: closure.decimals }).onConflictDoNothing({ target: schema.tokens.mint }).returning();
+    token ??= (await transaction.select().from(schema.tokens).where(eq(schema.tokens.mint, closure.mint)).limit(1))[0];
+    if (token) input.tokenIds.set(closure.mint, token.id);
+  }
+  const positions = new Map<string, PositionEvidence>();
+  const positionMints = new Set([...reconstructedLegs.map((leg) => leg.tokenMint), ...(input.canonicalEvidence?.accountClosures.flatMap((closure) => closure.mint ? [closure.mint] : []) ?? [])]);
+  for (const mint of positionMints) {
+    const tokenId = input.tokenIds.get(mint);
+    if (!tokenId) continue;
+    const [position] = await transaction.select().from(schema.walletPositions).where(and(eq(schema.walletPositions.walletId, input.walletId), eq(schema.walletPositions.tokenId, tokenId))).limit(1);
+    if (position) positions.set(mint, { rawAmount: BigInt(position.rawAmount), complete: position.unknownBasisRawAmount === "0" });
+  }
+  const actions = classifyEconomicActions({
+    succeeded: input.chainTransaction.succeeded,
+    reconstructedLegs,
+    tokenFlows: input.chainTransaction.tokenFlows,
+    nativePrincipalLamports: input.chainTransaction.nativeTransferLamports ?? 0n,
+    positions,
+    ...(input.canonicalEvidence ? { canonicalEvidence: input.canonicalEvidence } : {}),
+  });
+  for (const [actionIndex, action] of actions.entries()) await transaction.insert(schema.walletEconomicActions).values({
+    walletId: input.walletId, transactionId: input.transactionId, actionIndex, action: action.action,
+    tokenId: action.tokenMint ? input.tokenIds.get(action.tokenMint) ?? null : null,
+    rawTokenAmount: action.rawTokenAmount?.toString() ?? null, tokenDecimals: action.tokenDecimals,
+    considerationMint: action.consideration?.mint ?? null, considerationRawAmount: action.consideration?.rawAmount.toString() ?? null, considerationDecimals: action.consideration?.decimals ?? null,
+    positionBeforeRaw: action.positionBeforeRaw?.toString() ?? null, positionAfterRaw: action.positionAfterRaw?.toString() ?? null,
+    positionImpactNumerator: action.positionImpactNumerator?.toString() ?? null, positionImpactDenominator: action.positionImpactDenominator?.toString() ?? null,
+    confidence: action.confidence, evidence: action.evidence, providerType: input.chainTransaction.providerType,
+    classificationVersion: ECONOMIC_ACTION_CLASSIFICATION_VERSION, occurredAt: input.chainTransaction.occurredAt,
+  }).onConflictDoNothing();
+  return actions;
 }

@@ -57,6 +57,13 @@
       "when": 1790594067086,
       "tag": "0007_glorious_boomer",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790664739272,
+      "tag": "0008_soft_cassandra_nova",
+      "breakpoints": true
     }
   ]
 }

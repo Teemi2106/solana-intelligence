@@ -1,4 +1,4 @@
-import type { FinalityProvider, FinalityStatus, TokenLaunchProvider, TokenLaunchResult } from "@swi/domain";
+import type { CanonicalEconomicEvidence, CanonicalEconomicEvidenceProvider, FinalityProvider, FinalityStatus, TokenLaunchProvider, TokenLaunchResult, WalletAddress } from "@swi/domain";
 import { z } from "zod";
 import { ProviderRequestError } from "./errors";
 import { defaultSleep, requestJson } from "./http";
@@ -27,8 +27,29 @@ const firstActivityResponse = z.object({
   }),
 });
 
+const transactionEvidenceResponse = z.object({
+  result: z.object({
+    meta: z.object({
+      preBalances: z.array(z.number().int().nonnegative()),
+      postBalances: z.array(z.number().int().nonnegative()),
+      preTokenBalances: z.array(z.object({
+        accountIndex: z.number().int().nonnegative(), mint: z.string(), owner: z.string().optional(), programId: z.string().optional(),
+        uiTokenAmount: z.object({ amount: z.string().regex(/^\d+$/), decimals: z.number().int().min(0).max(30) }),
+      })).default([]),
+    }),
+    transaction: z.object({ message: z.object({
+      accountKeys: z.array(z.union([z.string(), z.object({ pubkey: z.string() })])),
+      instructions: z.array(z.object({
+        programId: z.string(),
+        parsed: z.object({ type: z.string(), info: z.object({ account: z.string(), destination: z.string().optional(), owner: z.string().optional() }).loose() }).optional(),
+      }).loose()),
+    }) }),
+  }).nullable(),
+});
+const tokenPrograms = new Set(["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"]);
+
 /** Standard Solana RPC (finality) and Helius' getTransactionsForAddress (a token's earliest activity). */
-export class HeliusRpcClient implements FinalityProvider, TokenLaunchProvider {
+export class HeliusRpcClient implements FinalityProvider, TokenLaunchProvider, CanonicalEconomicEvidenceProvider {
   private readonly baseUrl: string;
 
   constructor(private readonly options: HeliusRpcOptions) {
@@ -61,6 +82,29 @@ export class HeliusRpcClient implements FinalityProvider, TokenLaunchProvider {
       status: "FOUND", firstActivityAt: new Date(first.blockTime * 1000), firstActivitySlot: BigInt(first.slot),
       firstSignature: first.transaction.signatures[0] ?? "", firstSigner: signer ? (typeof signer === "string" ? signer : signer.pubkey) : null,
     };
+  }
+
+  async getEconomicEvidence(signature: string, wallet: WalletAddress): Promise<CanonicalEconomicEvidence> {
+    const parsed = transactionEvidenceResponse.safeParse(await this.rpc("getTransaction", [signature, { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 }]));
+    if (!parsed.success || parsed.data.result === null) throw new ProviderRequestError("Helius RPC returned invalid canonical transaction evidence", "INVALID_RESPONSE", false);
+    const { meta, transaction } = parsed.data.result;
+    const keys = transaction.message.accountKeys.map((key) => typeof key === "string" ? key : key.pubkey);
+    const accountClosures = transaction.message.instructions.flatMap((instruction) => {
+      if (!tokenPrograms.has(instruction.programId) || instruction.parsed?.type !== "closeAccount" || instruction.parsed.info.owner !== wallet || instruction.parsed.info.destination !== wallet) return [];
+      const accountIndex = keys.indexOf(instruction.parsed.info.account);
+      const balance = meta.preTokenBalances.find((item) => item.accountIndex === accountIndex);
+      const preLamports = accountIndex >= 0 ? BigInt(meta.preBalances[accountIndex] ?? 0) : 0n;
+      const postLamports = accountIndex >= 0 ? BigInt(meta.postBalances[accountIndex] ?? 0) : 0n;
+      return [{
+        account: instruction.parsed.info.account,
+        mint: balance?.mint ?? null,
+        tokenProgram: balance?.programId ?? instruction.programId,
+        preRawAmount: balance ? BigInt(balance.uiTokenAmount.amount) : null,
+        decimals: balance?.uiTokenAmount.decimals ?? null,
+        rentReclaimedLamports: preLamports > postLamports ? preLamports - postLamports : 0n,
+      }];
+    });
+    return { accountClosures };
   }
 
   private rpc(method: string, params: unknown): Promise<unknown> {

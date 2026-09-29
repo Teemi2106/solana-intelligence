@@ -65,6 +65,37 @@ export const walletTransactions = pgTable("wallet_transactions", {
   index("wallet_transactions_finality_idx").on(table.finality, table.firstSeenAt),
 ]);
 
+/** Immutable, replay-safe economic interpretation of a live wallet transaction. */
+export const walletEconomicActions = pgTable("wallet_economic_actions", {
+  id: id(),
+  walletId: uuid("wallet_id").references(() => trackedWallets.id, { onDelete: "cascade" }).notNull(),
+  transactionId: uuid("transaction_id").references(() => walletTransactions.id, { onDelete: "cascade" }).notNull(),
+  actionIndex: integer("action_index").notNull(),
+  action: text("action").notNull(),
+  tokenId: uuid("token_id").references(() => tokens.id),
+  rawTokenAmount: rawAmount("raw_token_amount"),
+  tokenDecimals: integer("token_decimals"),
+  considerationMint: text("consideration_mint"),
+  considerationRawAmount: rawAmount("consideration_raw_amount"),
+  considerationDecimals: integer("consideration_decimals"),
+  positionBeforeRaw: rawAmount("position_before_raw"),
+  positionAfterRaw: rawAmount("position_after_raw"),
+  positionImpactNumerator: rawAmount("position_impact_numerator"),
+  positionImpactDenominator: rawAmount("position_impact_denominator"),
+  confidence: text("confidence").notNull(),
+  evidence: jsonb("evidence").$type<readonly string[]>().notNull(),
+  providerType: text("provider_type").notNull(),
+  classificationVersion: text("classification_version").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt: createdAt(),
+}, (table) => [
+  uniqueIndex("wallet_economic_actions_transaction_index_uq").on(table.transactionId, table.actionIndex),
+  index("wallet_economic_actions_wallet_time_idx").on(table.walletId, table.occurredAt),
+  index("wallet_economic_actions_action_time_idx").on(table.action, table.occurredAt),
+  check("wallet_economic_actions_decimals_range", sql`${table.tokenDecimals} is null or ${table.tokenDecimals} between 0 and 30`),
+  check("wallet_economic_actions_consideration_decimals_range", sql`${table.considerationDecimals} is null or ${table.considerationDecimals} between 0 and 30`),
+]);
+
 /** Immutable, provider-attributed price observations; the exact rows accounting used are referenced by trades. */
 export const historicalPricePoints = pgTable("historical_price_points", {
   id: id(),

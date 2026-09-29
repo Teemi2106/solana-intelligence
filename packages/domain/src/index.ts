@@ -11,4 +11,5 @@ export * from "./historical-price";
 export * from "./pricing";
 export * from "./invariant";
 export * from "./copyability";
+export * from "./economic-action";
 export * from "./token-intelligence";

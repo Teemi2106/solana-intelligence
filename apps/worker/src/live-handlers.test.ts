@@ -112,7 +112,8 @@ describe.skipIf(!context)("live handlers", () => {
       const [affected] = first.affected;
       if (!affected) throw new Error("expected affected wallet");
       expect(notifier.messages[0]).toMatchObject({ deduplicationKey: `phase3-live:${affected.walletId}:${fixtures.pumpAmmBuy.signature}` });
-      expect(notifier.messages[0]?.text).toContain("Status: Processed live");
+      expect(notifier.messages[0]?.text).toContain("BUY");
+      expect(notifier.messages[0]?.text).toContain("Provider type: SWAP (provenance)");
     });
 
     it("never sends a live Telegram diagnostic when recovery arrived before a late webhook", async () => {

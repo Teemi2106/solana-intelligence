@@ -23,6 +23,8 @@ export function loadWalletFixtures(): WalletFixtures {
   return schema.parse(JSON.parse(readFileSync(new URL("./helius-wallet-fixtures.json", import.meta.url), "utf8")));
 }
 
+export * from "./economic-actions";
+
 /** Structurally faithful Jupiter-routed buy (SOL -> USDC -> BONK-like -> TOKEN), derived from a real PumpSwap buy. Synthetic: the fixture wallet never used Jupiter. */
 export function jupiterRoutedBuy(base: HeliusTransaction): HeliusTransaction {
   return {
