@@ -12,4 +12,5 @@ export * from "./pricing";
 export * from "./invariant";
 export * from "./copyability";
 export * from "./economic-action";
+export * from "./behavior-anomaly";
 export * from "./token-intelligence";

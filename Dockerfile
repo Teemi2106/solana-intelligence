@@ -34,6 +34,7 @@ RUN npm install --global npm@11.6.0 \
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/scripts/run-with-env.mjs ./scripts/run-with-env.mjs
+COPY --from=build /app/scripts/enqueue-behavior-baseline.ts ./scripts/enqueue-behavior-baseline.ts
 COPY --from=build /app/apps/web/package.json ./apps/web/package.json
 COPY --from=build /app/apps/worker/package.json ./apps/worker/package.json
 COPY --from=build /app/apps/worker/src ./apps/worker/src

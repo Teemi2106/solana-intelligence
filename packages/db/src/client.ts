@@ -7,6 +7,7 @@ export interface Database {
   readonly sql: Sql;
   close(): Promise<void>;
 }
+export type DatabaseTransactionSql = postgres.TransactionSql;
 
 export function createDatabase(databaseUrl: string, options: { maxConnections?: number; quiet?: boolean } = {}): Database {
   const client = postgres(databaseUrl, {

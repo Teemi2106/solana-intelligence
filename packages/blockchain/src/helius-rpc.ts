@@ -30,8 +30,9 @@ const firstActivityResponse = z.object({
 const transactionEvidenceResponse = z.object({
   result: z.object({
     meta: z.object({
-      preBalances: z.array(z.number().int().nonnegative()),
-      postBalances: z.array(z.number().int().nonnegative()),
+      fee: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+      preBalances: z.array(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)),
+      postBalances: z.array(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)),
       preTokenBalances: z.array(z.object({
         accountIndex: z.number().int().nonnegative(), mint: z.string(), owner: z.string().optional(), programId: z.string().optional(),
         uiTokenAmount: z.object({ amount: z.string().regex(/^\d+$/), decimals: z.number().int().min(0).max(30) }),
@@ -41,7 +42,7 @@ const transactionEvidenceResponse = z.object({
       accountKeys: z.array(z.union([z.string(), z.object({ pubkey: z.string() })])),
       instructions: z.array(z.object({
         programId: z.string(),
-        parsed: z.object({ type: z.string(), info: z.object({ account: z.string(), destination: z.string().optional(), owner: z.string().optional() }).loose() }).optional(),
+        parsed: z.object({ type: z.string(), info: z.object({ account: z.string().optional(), destination: z.string().optional(), owner: z.string().optional(), source: z.string().optional(), lamports: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).loose() }).optional(),
       }).loose()),
     }) }),
   }).nullable(),
@@ -90,13 +91,14 @@ export class HeliusRpcClient implements FinalityProvider, TokenLaunchProvider, C
     const { meta, transaction } = parsed.data.result;
     const keys = transaction.message.accountKeys.map((key) => typeof key === "string" ? key : key.pubkey);
     const accountClosures = transaction.message.instructions.flatMap((instruction) => {
-      if (!tokenPrograms.has(instruction.programId) || instruction.parsed?.type !== "closeAccount" || instruction.parsed.info.owner !== wallet || instruction.parsed.info.destination !== wallet) return [];
-      const accountIndex = keys.indexOf(instruction.parsed.info.account);
+      const account = instruction.parsed?.info.account;
+      if (!account || !tokenPrograms.has(instruction.programId) || instruction.parsed?.type !== "closeAccount" || instruction.parsed.info.owner !== wallet || instruction.parsed.info.destination !== wallet) return [];
+      const accountIndex = keys.indexOf(account);
       const balance = meta.preTokenBalances.find((item) => item.accountIndex === accountIndex);
       const preLamports = accountIndex >= 0 ? BigInt(meta.preBalances[accountIndex] ?? 0) : 0n;
       const postLamports = accountIndex >= 0 ? BigInt(meta.postBalances[accountIndex] ?? 0) : 0n;
       return [{
-        account: instruction.parsed.info.account,
+        account,
         mint: balance?.mint ?? null,
         tokenProgram: balance?.programId ?? instruction.programId,
         preRawAmount: balance ? BigInt(balance.uiTokenAmount.amount) : null,
@@ -104,7 +106,12 @@ export class HeliusRpcClient implements FinalityProvider, TokenLaunchProvider, C
         rentReclaimedLamports: preLamports > postLamports ? preLamports - postLamports : 0n,
       }];
     });
-    return { accountClosures };
+    const walletIndex = keys.indexOf(wallet);
+    const native = transaction.message.instructions.find((instruction) => instruction.programId === "11111111111111111111111111111111" && instruction.parsed?.type === "transfer" && instruction.parsed.info.source === wallet && instruction.parsed.info.destination && instruction.parsed.info.lamports !== undefined);
+    const nativeTransfer = native?.parsed?.info.destination && native.parsed.info.lamports !== undefined && walletIndex >= 0 ? {
+      destination: native.parsed.info.destination, amountLamports: BigInt(native.parsed.info.lamports), preBalanceLamports: BigInt(meta.preBalances[walletIndex] ?? 0), postBalanceLamports: BigInt(meta.postBalances[walletIndex] ?? 0), feeLamports: BigInt(meta.fee),
+    } : null;
+    return { accountClosures, nativeTransfer };
   }
 
   private rpc(method: string, params: unknown): Promise<unknown> {

@@ -159,6 +159,7 @@ async function persistEconomicActions(transaction: DbTransaction, input: {
     positionImpactNumerator: action.positionImpactNumerator?.toString() ?? null, positionImpactDenominator: action.positionImpactDenominator?.toString() ?? null,
     confidence: action.confidence, evidence: action.evidence, providerType: input.chainTransaction.providerType,
     classificationVersion: ECONOMIC_ACTION_CLASSIFICATION_VERSION, occurredAt: input.chainTransaction.occurredAt,
+    nativeDestination: action.nativeTransferEvidence?.destination ?? null, nativePreBalanceLamports: action.nativeTransferEvidence?.preBalanceLamports.toString() ?? null, nativePostBalanceLamports: action.nativeTransferEvidence?.postBalanceLamports.toString() ?? null, nativeTransferLamports: action.nativeTransferEvidence?.amountLamports.toString() ?? null, nativeFeeLamports: action.nativeTransferEvidence?.feeLamports.toString() ?? null,
   }).onConflictDoNothing();
   return actions;
 }

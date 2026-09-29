@@ -86,6 +86,7 @@ export const walletEconomicActions = pgTable("wallet_economic_actions", {
   evidence: jsonb("evidence").$type<readonly string[]>().notNull(),
   providerType: text("provider_type").notNull(),
   classificationVersion: text("classification_version").notNull(),
+  nativeDestination: text("native_destination"), nativePreBalanceLamports: rawAmount("native_pre_balance_lamports"), nativePostBalanceLamports: rawAmount("native_post_balance_lamports"), nativeTransferLamports: rawAmount("native_transfer_lamports"), nativeFeeLamports: rawAmount("native_fee_lamports"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   createdAt: createdAt(),
 }, (table) => [

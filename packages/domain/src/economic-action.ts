@@ -16,6 +16,7 @@ export interface CanonicalAccountClosure {
 
 export interface CanonicalEconomicEvidence {
   readonly accountClosures: readonly CanonicalAccountClosure[];
+  readonly nativeTransfer: { readonly destination: string; readonly amountLamports: bigint; readonly preBalanceLamports: bigint; readonly postBalanceLamports: bigint; readonly feeLamports: bigint } | null;
 }
 
 export interface PositionEvidence {
@@ -36,6 +37,7 @@ export interface EconomicAction {
   readonly positionImpactDenominator: bigint | null;
   readonly confidence: EconomicActionConfidence;
   readonly evidence: readonly string[];
+  readonly nativeTransferEvidence?: CanonicalEconomicEvidence["nativeTransfer"];
 }
 
 export interface EconomicActionInput {
@@ -88,6 +90,7 @@ export function classifyEconomicActions(input: EconomicActionInput): readonly Ec
     action: input.nativePrincipalLamports > 0n ? "TRANSFER_IN" : "TRANSFER_OUT", tokenMint: null, rawTokenAmount: abs(input.nativePrincipalLamports), tokenDecimals: 9,
     consideration: null, positionBeforeRaw: null, positionAfterRaw: null, positionImpactNumerator: null, positionImpactDenominator: null,
     confidence: "HIGH", evidence: ["CANONICAL_NATIVE_SOL_DELTA", "FEES_AND_RENT_EXCLUDED", "NO_TOKEN_TRADE"],
+    ...(input.canonicalEvidence?.nativeTransfer ? { nativeTransferEvidence: input.canonicalEvidence.nativeTransfer } : {}),
   }];
   return [unresolved("INSUFFICIENT_ECONOMIC_EVIDENCE")];
 }

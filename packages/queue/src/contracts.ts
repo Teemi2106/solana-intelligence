@@ -37,6 +37,8 @@ export const gapBackfillJob = z.object({ walletId: z.uuid() });
 export const reconcileSubscriptionsJob = z.object({ reason: z.string().max(64).default("scheduled") });
 export const tokenLaunchEnrichmentJob = z.object({ walletId: z.uuid() });
 export const tokenIntelligenceJob = z.object({ requestId: z.uuid() });
+export const behaviorEvaluateJob = z.object({ walletId: z.uuid() });
+export const behaviorBaselineBuildJob = z.object({ walletId: z.uuid() });
 
 export const deliverNotificationJob = z.object({
   deliveryId: z.uuid(),

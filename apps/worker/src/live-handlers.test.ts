@@ -34,6 +34,7 @@ class RecordingScheduler implements LiveScheduler {
   gapBackfill(walletId: string) { return this.record("gap", walletId); }
   enrichLaunchFacts(walletId: string) { return this.record("enrich", walletId); }
   enrichTokenRequests(requestIds: readonly string[]) { return this.record("token-intelligence", ...requestIds); }
+  evaluateBehavior(walletId: string) { return this.record("behavior", walletId); }
   of(kind: string) { return this.calls.filter((call) => call.kind === kind); }
 }
 
@@ -271,7 +272,9 @@ describe.skipIf(!context)("live handlers", () => {
       const { provider } = priceStack(database());
       for (const transaction of fixtures.replaySet.slice(0, 10)) await handleNormalizeLiveEvent(deps({ prices: provider }), await recordOne(transaction));
       await handleWalletRecompute(deps({ prices: provider }), { walletId, mode: "price-only" });
+      expect(scheduler.of("behavior")).toHaveLength(0);
       await handleWalletRecompute(deps({ prices: provider }), { walletId, mode: "full" });
+      expect(scheduler.of("behavior")).toHaveLength(1);
       expect((await database().sql<{ n: number }[]>`select count(*)::int as n from wallet_inventory_lots`)[0]?.n).toBe(0);
       for (const transaction of fixtures.replaySet.slice(0, 10)) await handleFinalityCheck(deps({ finality: finalityProvider("FINALIZED") }), { signature: transaction.signature, attempt: 0 });
       await handleWalletRecompute(deps({ prices: provider }), { walletId, mode: "full" });
@@ -327,7 +330,7 @@ describe.skipIf(!context)("live handlers", () => {
       await handleNormalizeLiveEvent(deps(), await recordOne(fixtures.pumpAmmSell));
       await database().sql`update wallet_transactions set first_seen_at = now() - interval '10 minutes' where signature = ${fixtures.pumpAmmSell.signature}`;
       scheduler.calls.length = 0;
-      expect(await handleSweep(deps({ now: () => new Date() }))).toEqual({ eventsRequeued: 1, finalityRequeued: 1 });
+      expect(await handleSweep(deps({ now: () => new Date() }))).toEqual({ eventsRequeued: 1, finalityRequeued: 1, behaviorRequeued: 0 });
       expect(scheduler.of("normalize")[0]?.args[0]).toEqual([stuck]);
       expect(scheduler.of("finality")[0]?.args).toEqual([fixtures.pumpAmmSell.signature, 0, 0]);
     });

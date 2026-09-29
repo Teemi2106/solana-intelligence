@@ -10,6 +10,7 @@ const commands = {
   worker: { cwd: root, args: ["--import", "tsx", "apps/worker/src/main.ts"] },
   "telegram-test": { cwd: root, args: ["apps/worker/dist/telegram-connectivity.js"] },
   "wallet-reprocess": { cwd: root, args: ["--import", "tsx", "scripts/reprocess-wallet.mjs", ...process.argv.slice(3)] },
+  "behavior-baseline": { cwd: root, args: ["--import", "tsx", "scripts/enqueue-behavior-baseline.ts", ...process.argv.slice(3)] },
   "db-generate": { cwd: resolve(root, "packages/db"), args: [resolve(root, "node_modules/drizzle-kit/bin.cjs"), "generate"] },
   "db-migrate": { cwd: resolve(root, "packages/db"), args: ["--import", "tsx", "src/migrate.ts"] },
 };

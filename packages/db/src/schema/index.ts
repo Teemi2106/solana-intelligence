@@ -5,3 +5,4 @@ export * from "./system";
 export * from "./wallets";
 export * from "./wallet-intelligence";
 export * from "./live";
+export * from "./behavior";

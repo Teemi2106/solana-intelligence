@@ -39,11 +39,21 @@ describe("HeliusRpcClient token launch", () => {
 describe("HeliusRpcClient canonical economic evidence", () => {
   it("extracts a Token-2022 close-account instruction with exact rent and zero pre-balance", async () => {
     const request = respond({ result: {
-      meta: { preBalances: [445721394358, 1513840, 70128638], postBalances: [445722903198, 0, 70128638], preTokenBalances: [{ accountIndex: 1, mint: "CHyPGNd9d7enSG9MiFfbLaYN7PcP8Z7V4Jp2RH73pump", owner: "Wallet111", programId: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", uiTokenAmount: { amount: "0", decimals: 6 } }] },
+      meta: { fee: 5000, preBalances: [445721394358, 1513840, 70128638], postBalances: [445722903198, 0, 70128638], preTokenBalances: [{ accountIndex: 1, mint: "CHyPGNd9d7enSG9MiFfbLaYN7PcP8Z7V4Jp2RH73pump", owner: "Wallet111", programId: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", uiTokenAmount: { amount: "0", decimals: 6 } }] },
       transaction: { message: { accountKeys: [{ pubkey: "Wallet111" }, { pubkey: "TokenAccount111" }, { pubkey: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" }], instructions: [{ programId: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", parsed: { type: "closeAccount", info: { account: "TokenAccount111", destination: "Wallet111", owner: "Wallet111" } } }] } },
     } });
     expect(await rpc(request).getEconomicEvidence("signature", "Wallet111" as never)).toEqual({ accountClosures: [{
       account: "TokenAccount111", mint: "CHyPGNd9d7enSG9MiFfbLaYN7PcP8Z7V4Jp2RH73pump", tokenProgram: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", preRawAmount: 0n, decimals: 6, rentReclaimedLamports: 1513840n,
-    }] });
+    }], nativeTransfer: null });
+  });
+
+  it("extracts exact bounded native-transfer balance, destination, amount, and fee evidence", async () => {
+    const request = respond({ result: {
+      meta: { fee: 5000, preBalances: [1_000_000_000, 10_000], postBalances: [749_995_000, 250_010_000], preTokenBalances: [] },
+      transaction: { message: { accountKeys: [{ pubkey: "Wallet111" }, { pubkey: "Destination111" }], instructions: [{ program: "system", programId: "11111111111111111111111111111111", parsed: { type: "transfer", info: { source: "Wallet111", destination: "Destination111", lamports: 250_000_000 } } }] } },
+    } });
+    expect(await rpc(request).getEconomicEvidence("signature", "Wallet111" as never)).toEqual({ accountClosures: [], nativeTransfer: {
+      destination: "Destination111", amountLamports: 250_000_000n, preBalanceLamports: 1_000_000_000n, postBalanceLamports: 749_995_000n, feeLamports: 5000n,
+    } });
   });
 });

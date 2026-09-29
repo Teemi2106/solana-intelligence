@@ -52,7 +52,7 @@ export async function listTrackedWallets(database: Database) {
 export async function getWalletDetail(database: Database, address: string) {
   const [wallet] = await database.query.select().from(trackedWallets).where(eq(trackedWallets.address, address)).limit(1);
   if (!wallet) return null;
-  const [labels, runs, performance, scores, classifications, trades, positions, diagnosticRows, rejectionRows] = await Promise.all([
+  const [labels, runs, performance, scores, classifications, trades, positions, diagnosticRows, rejectionRows, behaviorIncidents] = await Promise.all([
     database.query.select().from(walletLabels).where(eq(walletLabels.walletId, wallet.id)),
     database.query.select().from(walletIngestionRuns).where(eq(walletIngestionRuns.walletId, wallet.id)).orderBy(desc(walletIngestionRuns.createdAt)).limit(10),
     database.query.select().from(walletPerformanceSnapshots).where(eq(walletPerformanceSnapshots.walletId, wallet.id)).orderBy(desc(walletPerformanceSnapshots.observedAt)).limit(60),
@@ -96,6 +96,11 @@ export async function getWalletDetail(database: Database, address: string) {
       group by issue.value
       order by count(distinct wt.id) desc, issue.value
     `,
+    database.sql<{ id: string; severity: string; status: string; revision: number; rule_ids: readonly string[]; families: readonly string[]; baseline_quality: string; opened_at: Date; latest_at: Date }[]>`
+      select id,severity,status,revision,rule_ids,families,baseline_quality,opened_at,latest_at
+      from wallet_behavior_incidents where wallet_id=${wallet.id}
+      order by latest_at desc limit 50
+    `,
   ]);
   const row = diagnosticRows[0];
   const diagnostics = row ? {
@@ -115,5 +120,5 @@ export async function getWalletDetail(database: Database, address: string) {
   const newest = new Map<number, (typeof performance)[number]>();
   for (const snapshot of performance) if (!newest.has(snapshot.windowDays)) newest.set(snapshot.windowDays, snapshot);
   const latestPerWindow = [...newest.values()].sort((a, b) => a.windowDays - b.windowDays);
-  return { wallet, labels, runs, performance: latestPerWindow, scores, classifications, trades, positions, diagnostics };
+  return { wallet, labels, runs, performance: latestPerWindow, scores, classifications, trades, positions, diagnostics, behaviorIncidents };
 }

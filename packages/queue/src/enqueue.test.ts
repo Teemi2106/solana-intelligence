@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { enqueueFinalityCheck, enqueueNormalizeLiveEvents, enqueueReconcileSubscriptions, enqueueWalletRecompute, jobIds, normalizeJobOptions } from "./queues";
+import { enqueueBehaviorBaselineBuild, enqueueBehaviorEvaluation, enqueueFinalityCheck, enqueueNormalizeLiveEvents, enqueueReconcileSubscriptions, enqueueWalletRecompute, jobIds, normalizeJobOptions } from "./queues";
 
 const id = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const signature = "5".repeat(88);
@@ -7,7 +7,7 @@ const at = new Date("2026-09-25T12:00:04Z");
 
 describe("deterministic job ids", () => {
   it("never contain a colon (BullMQ rejects it) and are stable for the same entity", () => {
-    const ids = [jobIds.normalizeLiveEvent(id), jobIds.walletRecompute(id, "full", at), jobIds.finalityCheck(signature, 2), jobIds.gapBackfill(id, at), jobIds.reconcile(at), jobIds.scheduledReconcile(at), jobIds.sweep(at), jobIds.gapScan(at), jobIds.tokenLaunch(id, at)];
+    const ids = [jobIds.normalizeLiveEvent(id), jobIds.walletRecompute(id, "full", at), jobIds.finalityCheck(signature, 2), jobIds.gapBackfill(id, at), jobIds.reconcile(at), jobIds.scheduledReconcile(at), jobIds.sweep(at), jobIds.gapScan(at), jobIds.tokenLaunch(id, at), jobIds.behaviorEvaluate(id, at), jobIds.behaviorBaselineBuild(id, at)];
     for (const value of ids) expect(value).not.toContain(":");
     expect(jobIds.normalizeLiveEvent(id)).toBe(jobIds.normalizeLiveEvent(id));
     expect(jobIds.finalityCheck(signature, 2)).toBe(jobIds.finalityCheck(signature, 2));
@@ -52,5 +52,13 @@ describe("enqueue helpers", () => {
     await enqueueReconcileSubscriptions({ liveMaintenance: { add } as never }, "wallet-created", at);
     expect(add).toHaveBeenNthCalledWith(1, "wallet-recompute", { walletId: id, mode: "full" }, { jobId: jobIds.walletRecompute(id, "full", at), delay: 500 });
     expect(add).toHaveBeenNthCalledWith(2, "reconcile-subscriptions", { reason: "wallet-created" }, expect.objectContaining({ jobId: jobIds.reconcile(at), attempts: 8 }));
+  });
+
+  it("coalesces live behavior evaluation and makes baseline build per-wallet idempotent", async () => {
+    const add = vi.fn().mockResolvedValue({});
+    await enqueueBehaviorEvaluation({ analysis: { add } as never }, id, at);
+    await enqueueBehaviorBaselineBuild({ analysis: { add } as never }, id, at);
+    expect(add).toHaveBeenNthCalledWith(1, "behavior-evaluate", { walletId: id }, expect.objectContaining({ jobId: jobIds.behaviorEvaluate(id, at), attempts: 4 }));
+    expect(add).toHaveBeenNthCalledWith(2, "behavior-baseline-build", { walletId: id }, expect.objectContaining({ jobId: jobIds.behaviorBaselineBuild(id, at), attempts: 3 }));
   });
 });

@@ -22,6 +22,7 @@ import {
   enqueueReconcileSubscriptions,
   enqueueTokenIntelligence,
   enqueueWalletRecompute,
+  enqueueBehaviorEvaluation,
   finalityCheckJob,
   gapBackfillJob,
   ingestWalletHistoryJob,
@@ -34,6 +35,8 @@ import {
   sanitizeRedisFailure,
   tokenLaunchEnrichmentJob,
   tokenIntelligenceJob,
+  behaviorEvaluateJob,
+  behaviorBaselineBuildJob,
   verifyRedisStartup,
   walletRecomputeJob,
 } from "@swi/queue";
@@ -58,6 +61,7 @@ import {
 import { createHistoricalPriceProvider } from "./price-provider.js";
 import { createTelegramNotifier } from "./telegram-notifier.js";
 import { enrichTokenRequest, findDueTokenEnrichmentRequests } from "./token-intelligence.js";
+import { buildHistoricalBehaviorBaseline, deliverBehaviorNotifications, evaluateWalletBehavior } from "./behavior-anomaly.js";
 import { DexScreenerTokenPoolProvider } from "@swi/market-data";
 
 const config = parseConfig(process.env);
@@ -169,6 +173,7 @@ const scheduler: LiveScheduler = {
     );
   },
   enrichTokenRequests: (requestIds) => config.ENABLE_TOKEN_INTELLIGENCE ? enqueueTokenIntelligence(queues, requestIds) : Promise.resolve(),
+  evaluateBehavior: (walletId) => config.ENABLE_BEHAVIOR_ANOMALIES ? enqueueBehaviorEvaluation(queues, walletId) : Promise.resolve(),
 };
 const handlers: LiveHandlerDependencies = {
   database,
@@ -184,6 +189,7 @@ const handlers: LiveHandlerDependencies = {
   ...(liveNotifier ? { liveNotifier } : {}),
   recoveryIntegrityIntervalMs: config.RECOVERY_INTEGRITY_INTERVAL_HOURS * 60 * 60_000,
   recoveryShadowMode: config.RECOVERY_SHADOW_MODE,
+  behaviorEnabled: config.ENABLE_BEHAVIOR_ANOMALIES,
 };
 
 // An idle BullMQ worker otherwise wakes its blocking Redis command every five seconds.
@@ -342,6 +348,21 @@ const analysisWorker = new Worker(
           logger.info({ requestId: payload.requestId, status: result.status, components: result.components }, "token intelligence processed");
           return;
         }
+        case "behavior-evaluate": {
+          const payload = behaviorEvaluateJob.parse(job.data);
+          const policy = { recentDays: config.BEHAVIOR_RECENT_WINDOW_DAYS, longTermDays: config.BEHAVIOR_LONG_TERM_WINDOW_DAYS, maxObservations: config.BEHAVIOR_MAX_OBSERVATIONS, incidentWindowMinutes: config.BEHAVIOR_INCIDENT_WINDOW_MINUTES };
+          const result = await withTimeout(evaluateWalletBehavior(database, payload.walletId, policy, metrics), 120_000, "BEHAVIOR_EVALUATE");
+          const delivered = await deliverBehaviorNotifications(database, liveNotifier, payload.walletId);
+          logger.info({ walletId: payload.walletId, ...result, delivered }, "wallet behavior evaluated");
+          return;
+        }
+        case "behavior-baseline-build": {
+          const payload = behaviorBaselineBuildJob.parse(job.data);
+          const policy = { recentDays: config.BEHAVIOR_RECENT_WINDOW_DAYS, longTermDays: config.BEHAVIOR_LONG_TERM_WINDOW_DAYS, maxObservations: config.BEHAVIOR_MAX_OBSERVATIONS, incidentWindowMinutes: config.BEHAVIOR_INCIDENT_WINDOW_MINUTES };
+          const result = await withTimeout(buildHistoricalBehaviorBaseline(database, payload.walletId, policy), 300_000, "BEHAVIOR_BASELINE");
+          logger.info({ walletId: payload.walletId, ...result }, "wallet behavior baseline built");
+          return;
+        }
         default:
           throw new Error("UNKNOWN_ANALYSIS_JOB");
       }
@@ -397,7 +418,7 @@ if (liveEnabled) {
         }
         if (job.name === "sweep") {
           const result = await handleSweep(handlers);
-          if (result.eventsRequeued + result.finalityRequeued > 0)
+          if (result.eventsRequeued + result.finalityRequeued + result.behaviorRequeued > 0)
             logger.warn(result, "sweeper recovered stuck work");
           return;
         }

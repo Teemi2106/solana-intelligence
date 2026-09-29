@@ -50,7 +50,17 @@ export const jobIds = {
   gapScan: (now: Date) => `gap-scan-${String(bucket(now, 60 * 60))}`,
   tokenLaunch: (walletId: string, now: Date) => `token-launch-${walletId}-${String(bucket(now, 300))}`,
   tokenIntelligence: (requestId: string, now: Date) => `token-intelligence-${requestId}-${String(bucket(now, 300))}`,
+  behaviorEvaluate: (walletId: string, now: Date) => `behavior-evaluate-${walletId}-${String(bucket(now, 10))}`,
+  behaviorBaselineBuild: (walletId: string, now: Date) => `behavior-baseline-${walletId}-${String(bucket(now, 600))}`,
 };
+
+export async function enqueueBehaviorEvaluation(queues: Pick<AppQueues, "analysis">, walletId: string, now = new Date()): Promise<void> {
+  await queues.analysis.add("behavior-evaluate", { walletId }, { jobId: jobIds.behaviorEvaluate(walletId, now), attempts: 4, backoff: { type: "exponential", delay: 5_000 } });
+}
+
+export async function enqueueBehaviorBaselineBuild(queues: Pick<AppQueues, "analysis">, walletId: string, now = new Date()): Promise<void> {
+  await queues.analysis.add("behavior-baseline-build", { walletId }, { jobId: jobIds.behaviorBaselineBuild(walletId, now), attempts: 3, backoff: { type: "exponential", delay: 10_000 } });
+}
 
 export async function enqueueTokenIntelligence(queues: Pick<AppQueues, "analysis">, requestIds: readonly string[]): Promise<void> {
   if (requestIds.length === 0) return;

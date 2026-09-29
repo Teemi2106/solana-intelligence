@@ -17,6 +17,7 @@ export interface LiveScheduler {
   gapBackfill(walletId: string): Promise<void>;
   enrichLaunchFacts(walletId: string): Promise<void>;
   enrichTokenRequests(requestIds: readonly string[]): Promise<void>;
+  evaluateBehavior(walletId: string): Promise<void>;
 }
 
 export interface LiveHandlerDependencies {
@@ -35,6 +36,7 @@ export interface LiveHandlerDependencies {
   readonly logger?: { warn(context: Readonly<Record<string, unknown>>, message: string): void };
   readonly recoveryIntegrityIntervalMs?: number;
   readonly recoveryShadowMode?: boolean;
+  readonly behaviorEnabled?: boolean;
 }
 
 const need = <T>(value: T | undefined, name: string): T => {
@@ -150,9 +152,12 @@ export async function handleSweep(dependencies: LiveHandlerDependencies) {
   if (stuck.length > 0) await dependencies.scheduler.normalize(stuck);
   const unchecked = await findUncheckedConfirmed(dependencies.database, { now, olderThanMs: 120_000, limit: 200 });
   for (const signature of unchecked) await dependencies.scheduler.finalityCheck(signature, 0, 0);
+  const pendingBehavior = dependencies.behaviorEnabled === true ? await dependencies.database.sql<{ wallet_id: string }[]>`select distinct i.wallet_id from wallet_anomaly_notifications n join wallet_behavior_incidents i on i.id=n.incident_id where n.status in ('PENDING','RETRYING') and n.next_attempt_at<=${now} limit 200` : [];
+  for (const row of pendingBehavior) await dependencies.scheduler.evaluateBehavior(row.wallet_id);
   dependencies.metrics.increment("sweeper_requeued_total", { kind: "events" }, stuck.length);
   dependencies.metrics.increment("sweeper_requeued_total", { kind: "finality" }, unchecked.length);
-  return { eventsRequeued: stuck.length, finalityRequeued: unchecked.length };
+  dependencies.metrics.increment("sweeper_requeued_total", { kind: "behavior_notifications" }, pendingBehavior.length);
+  return { eventsRequeued: stuck.length, finalityRequeued: unchecked.length, behaviorRequeued: pendingBehavior.length };
 }
 
 /** Schedules a gap backfill for every active wallet the provider is confirmed to watch (periodic safety net for lost deliveries). */
@@ -185,6 +190,7 @@ export async function handleWalletRecompute(dependencies: LiveHandlerDependencie
   const [wallet] = await dependencies.database.query.select().from(schema.trackedWallets).where(eq(schema.trackedWallets.id, input.walletId)).limit(1);
   if (!wallet) return { pricing, accounting, intelligence: null };
   const intelligence = await updateWalletIntelligence({ database: dependencies.database }, { walletId: wallet.id, address: wallet.address, windows: accounting.windows, evidenceInputs: accounting.evidenceInputs, asOf });
+  await dependencies.scheduler.evaluateBehavior(wallet.id);
   // Launch facts arrive from an external provider, so they are fetched by a separate job and the recompute is repeated afterwards.
   if (dependencies.launch && intelligence.copyability.coverageBps !== null && intelligence.copyability.entriesWithLaunchFacts < intelligence.copyability.entries) await dependencies.scheduler.enrichLaunchFacts(wallet.id);
   return { pricing, accounting, intelligence };

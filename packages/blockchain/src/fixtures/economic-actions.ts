@@ -33,7 +33,7 @@ export const accountCloseFixture: HeliusTransaction = {
 export const accountCloseCanonicalEvidence: CanonicalEconomicEvidence = { accountClosures: [{
   account: "9Di2MQ5CqmJ2DQee2MTb5TGZhvYToqCwDAg6AT5QQTXo", mint: GTA6_MINT,
   tokenProgram: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", preRawAmount: 0n, decimals: 6, rentReclaimedLamports: 1_513_840n,
-}] };
+}], nativeTransfer: null };
 
 export const nativeTransferOutFixture: HeliusTransaction = {
   signature: "4zfLxYiuSj34feU4ALxAG43Eu6RVWZmgYgiasrcBeb5c1BfdzwJW8QoGhMmM4jiaSHiVGW3BmPNqKvKCHUGR5WSA",

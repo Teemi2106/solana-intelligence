@@ -69,10 +69,10 @@ export async function normalizeLiveEvent(dependencies: { database: Database; met
   for (const wallet of wallets) {
     const chainTransaction = normalizeHeliusTransaction(wallet.address as WalletAddress, tx);
     let canonicalEvidence: CanonicalEconomicEvidence | undefined;
-    if (dependencies.canonicalEvidence && tx.type === "UNKNOWN" && chainTransaction.tokenFlows.length === 0 && (chainTransaction.nativeTransferLamports ?? 0n) === 0n) {
+    if (dependencies.canonicalEvidence && chainTransaction.tokenFlows.length === 0 && (tx.type === "UNKNOWN" || (chainTransaction.nativeTransferLamports ?? 0n) !== 0n)) {
       try {
         canonicalEvidence = await dependencies.canonicalEvidence.getEconomicEvidence(tx.signature, wallet.address as WalletAddress);
-        dependencies.metrics?.increment("canonical_economic_evidence_total", { outcome: canonicalEvidence.accountClosures.length > 0 ? "found" : "empty" });
+        dependencies.metrics?.increment("canonical_economic_evidence_total", { outcome: canonicalEvidence.accountClosures.length > 0 || canonicalEvidence.nativeTransfer !== null ? "found" : "empty" });
       } catch {
         // A provider lookup cannot make durable webhook normalization fail. The classifier records UNRESOLVED.
         dependencies.metrics?.increment("canonical_economic_evidence_total", { outcome: "unavailable" });

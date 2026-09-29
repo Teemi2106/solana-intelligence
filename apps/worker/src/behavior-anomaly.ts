@@ -1,0 +1,189 @@
+import { Decimal } from "decimal.js";
+import { BEHAVIOR_POLICY_VERSION, actionNgrams, baselineQuality, deriveIncidentSeverity, empiricalPercentile, numericStatistics, type AnomalyFamily, type AnomalySeverity, type BaselineQuality, type BehaviorFeatureKind } from "@swi/domain";
+import type { Database, DatabaseTransactionSql } from "@swi/db";
+import type { MetricsRegistry } from "@swi/observability";
+import type { NotificationProvider } from "@swi/domain";
+
+type TxSql = DatabaseTransactionSql;
+type EvidenceValue = string | number | boolean | null;
+interface BehaviorPolicy { recentDays: number; longTermDays: number; maxObservations: number; incidentWindowMinutes: number; }
+interface Observation { featureKind: BehaviorFeatureKind; family: AnomalyFamily; numericValue?: string; categoricalValue?: string; unit: string; evidence: Record<string, EvidenceValue>; tokenId?: string | null; }
+
+const orderingKey = (row: { occurred_at: Date; slot: bigint; signature: string; action_index: number }) => `${row.occurred_at.toISOString()}|${row.slot.toString().padStart(20, "0")}|${row.signature}|${String(row.action_index).padStart(3, "0")}`;
+
+export async function buildHistoricalBehaviorBaseline(database: Database, walletId: string, policy: BehaviorPolicy, now = new Date()): Promise<{ observations: number; baselines: number }> {
+  return database.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${walletId}, 0))`;
+    const [history] = await sql<{ complete: boolean }[]>`select exists(select 1 from wallet_ingestion_runs where wallet_id=${walletId} and status='COMPLETED') as complete`;
+    await sql`insert into wallet_behavior_state(wallet_id,history_status,history_complete,methodology_version,updated_at) values(${walletId},'BUILDING',${history?.complete ?? false},${BEHAVIOR_POLICY_VERSION},now()) on conflict(wallet_id) do update set history_status='BUILDING',history_complete=excluded.history_complete,methodology_version=excluded.methodology_version,updated_at=now()`;
+    const before = await countObservations(sql, walletId);
+    await sql`
+      insert into wallet_behavior_observations(wallet_id,transaction_id,action_id,token_id,source_type,source_id,feature_kind,family,numeric_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline)
+      select t.wallet_id,t.transaction_id,null,t.token_id,'PHASE2_HISTORICAL_DERIVATION',t.id::text,
+        case when t.base_mint='So11111111111111111111111111111111111111112' then 'POSITION_SIZE_SOL' else 'POSITION_SIZE_USD' end,'SIZE',
+        case when t.base_mint='So11111111111111111111111111111111111111112' and t.raw_base_amount is not null then t.raw_base_amount/1000000000::numeric else t.estimated_usd_value end,
+        case when t.base_mint='So11111111111111111111111111111111111111112' then 'SOL' else 'USD' end,t.occurred_at,
+        wt.occurred_at::text||'|'||lpad(wt.slot::text,20,'0')||'|'||wt.signature||'|000',t.quality,${BEHAVIOR_POLICY_VERSION},jsonb_build_object('tradeId',t.id,'provenance','PHASE2_HISTORICAL_DERIVATION'),true
+      from wallet_trades t join wallet_transactions wt on wt.id=t.transaction_id
+      where t.wallet_id=${walletId} and wt.finality='finalized' and t.side='BUY' and ((t.base_mint='So11111111111111111111111111111111111111112' and t.raw_base_amount is not null) or t.estimated_usd_value is not null)
+      on conflict do nothing`;
+    await sql`
+      insert into wallet_behavior_observations(wallet_id,transaction_id,action_id,token_id,source_type,source_id,feature_kind,family,numeric_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline)
+      select r.wallet_id,st.transaction_id,null,r.token_id,'PHASE2_HISTORICAL_DERIVATION',r.id::text,'HOLDING_DURATION','DURATION',r.holding_seconds,'SECONDS',r.realized_at,
+        wt.occurred_at::text||'|'||lpad(wt.slot::text,20,'0')||'|'||wt.signature||'|000',r.quality,${BEHAVIOR_POLICY_VERSION},jsonb_build_object('realizationId',r.id,'provenance','PHASE2_HISTORICAL_DERIVATION'),true
+      from wallet_realizations r join wallet_trades st on st.id=r.sell_trade_id join wallet_transactions wt on wt.id=st.transaction_id
+      where r.wallet_id=${walletId} and r.holding_seconds is not null and not exists(select 1 from jsonb_array_elements_text(r.issues) x where x.value in ('UNKNOWN_COST_BASIS','MISSING_SALE_PRICE')) on conflict do nothing`;
+    await sql`
+      with ordered as (select t.*,wt.slot,wt.signature,sum(case when t.side='BUY' then t.raw_token_amount else -t.raw_token_amount end) over(partition by t.token_id order by t.occurred_at,wt.slot,wt.signature rows between unbounded preceding and 1 preceding) before_raw from wallet_trades t join wallet_transactions wt on wt.id=t.transaction_id where t.wallet_id=${walletId} and wt.finality='finalized')
+      insert into wallet_behavior_observations(wallet_id,transaction_id,token_id,source_type,source_id,feature_kind,family,numeric_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline)
+      select wallet_id,transaction_id,token_id,'PHASE2_HISTORICAL_DERIVATION',id::text,'EXIT_FRACTION','EXIT',least(10000::numeric,raw_token_amount*10000/before_raw),'BPS',occurred_at,occurred_at::text||'|'||lpad(slot::text,20,'0')||'|'||signature||'|000',quality,${BEHAVIOR_POLICY_VERSION},jsonb_build_object('tradeId',id,'positionBeforeRaw',before_raw::text),true from ordered where side='SELL' and before_raw>0 and raw_token_amount<=before_raw on conflict do nothing`;
+    await sql`
+      insert into wallet_behavior_observations(wallet_id,transaction_id,token_id,source_type,source_id,feature_kind,family,categorical_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline)
+      select t.wallet_id,t.transaction_id,t.token_id,'PHASE2_HISTORICAL_DERIVATION',t.id::text,'VENUE_NOVELTY','VENUE_ROUTE',t.venue,'CATEGORY',t.occurred_at,wt.occurred_at::text||'|'||lpad(wt.slot::text,20,'0')||'|'||wt.signature||'|000',t.quality,${BEHAVIOR_POLICY_VERSION},jsonb_build_object('tradeId',t.id),true from wallet_trades t join wallet_transactions wt on wt.id=t.transaction_id where t.wallet_id=${walletId} and wt.finality='finalized' and t.venue is not null on conflict do nothing`;
+    await sql`
+      insert into wallet_behavior_observations(wallet_id,transaction_id,action_id,token_id,source_type,source_id,feature_kind,family,categorical_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline)
+      select a.wallet_id,a.transaction_id,a.id,a.token_id,'HISTORICAL_ACTION_BOUNDARY',a.id::text,'ACTION_BOUNDARY','SEQUENCE','BASELINE_SEEDED','MARKER',a.occurred_at,wt.occurred_at::text||'|'||lpad(wt.slot::text,20,'0')||'|'||wt.signature||'|'||lpad(a.action_index::text,3,'0'),a.confidence,${BEHAVIOR_POLICY_VERSION},jsonb_build_object('provenance','HISTORICAL_BASELINE_BOUNDARY'),false from wallet_economic_actions a join wallet_transactions wt on wt.id=a.transaction_id where a.wallet_id=${walletId} and wt.finality='finalized' on conflict do nothing`;
+    const [boundary] = await sql<{ ordering_key: string | null }[]>`select wt.occurred_at::text||'|'||lpad(wt.slot::text,20,'0')||'|'||wt.signature||'|'||lpad(a.action_index::text,3,'0') ordering_key from wallet_economic_actions a join wallet_transactions wt on wt.id=a.transaction_id where a.wallet_id=${walletId} and wt.finality='finalized' order by a.occurred_at desc,wt.slot desc,wt.signature desc,a.action_index desc limit 1`;
+    const baselines = await rebuildBaselines(sql, walletId, policy, now, boundary?.ordering_key ?? "0000", 1);
+    await sql`update wallet_behavior_state set history_status='COMPLETED',history_complete=${history?.complete ?? false},history_cursor=null,dirty_from_ordering_key=null,watermark_ordering_key=${boundary?.ordering_key??null},updated_at=now() where wallet_id=${walletId}`;
+    return { observations: (await countObservations(sql, walletId)) - before, baselines };
+  });
+}
+
+async function countObservations(sql: TxSql, walletId: string): Promise<number> { const [row] = await sql<{ count: number }[]>`select count(*)::int count from wallet_behavior_observations where wallet_id=${walletId}`; return row?.count ?? 0; }
+
+async function rebuildBaselines(sql: TxSql, walletId: string, policy: BehaviorPolicy, now: Date, through: string, generation: number): Promise<number> {
+  const rows = await sql<{ feature_kind: BehaviorFeatureKind; unit: string; numeric_value: string | null; categorical_value: string | null; occurred_at: Date }[]>`
+    select feature_kind,unit,numeric_value::text,categorical_value,occurred_at from (select *,row_number() over(partition by feature_kind,unit order by occurred_at desc,id desc) rn from wallet_behavior_observations where wallet_id=${walletId} and included_in_baseline=true and occurred_at>=${new Date(now.getTime()-policy.longTermDays*86400000)}) ranked where rn<=${policy.maxObservations}`;
+  const grouped = new Map<string, (typeof rows)[number][]>();
+  for (const row of rows) { const group = `${row.feature_kind}|${row.unit}`; grouped.set(group, [...(grouped.get(group) ?? []), row]); }
+  let inserted = 0;
+  const [state] = await sql<{ history_complete: boolean }[]>`select history_complete from wallet_behavior_state where wallet_id=${walletId}`;
+  for (const [, allItems] of grouped) {
+    const first = allItems[0]; if (!first) continue; const feature = first.feature_kind;
+    for (const window of [{ name:"RECENT",days:policy.recentDays },{ name:"LONG",days:policy.longTermDays }] as const) {
+      const start=new Date(now.getTime()-window.days*86400000); const items=allItems.filter((item)=>item.occurred_at>=start);
+      if(items.length===0)continue;
+      const cohort=`${first.unit}:${window.name}`;
+      const dates = items.map((item) => item.occurred_at.getTime());
+      const coverageDays = dates.length < 2 ? 0 : Math.floor((Math.max(...dates)-Math.min(...dates))/86400000)+1;
+      const quality = baselineQuality({ count: items.length, coverageDays, historyComplete: state?.history_complete ?? false });
+      const numeric = items.flatMap((item) => item.numeric_value === null ? [] : [item.numeric_value]);
+      const categories = new Map<string, number>();
+      for (const item of items) if (item.categorical_value !== null) categories.set(item.categorical_value,(categories.get(item.categorical_value)??0)+1);
+      const statistics = numeric.length > 0 ? { kind:"NUMERIC", ...(numericStatistics(numeric) ?? {}) } : { kind:"CATEGORICAL", counts:Object.fromEntries([...categories].sort((a,b)=>b[1]-a[1]).slice(0,100)), distinctCount:categories.size };
+      await sql`insert into wallet_behavior_baselines(wallet_id,feature_kind,cohort,window_start,window_end,through_ordering_key,observation_count,coverage_days,quality,history_complete,completeness_bps,statistics,methodology_version,evaluation_generation,generated_at) values(${walletId},${feature},${cohort},${start},${now},${through},${items.length},${coverageDays},${quality},${state?.history_complete??false},${state?.history_complete?10000:0},${sql.json(statistics)},${BEHAVIOR_POLICY_VERSION},${generation},${now}) on conflict do nothing`;
+      inserted += 1;
+    }
+  }
+  return inserted;
+}
+
+export async function evaluateWalletBehavior(database: Database, walletId: string, policy: BehaviorPolicy, metrics?: MetricsRegistry, now = new Date()): Promise<{ evaluated: number; anomalies: number; notificationIds: readonly string[] }> {
+  const started = performance.now();
+  const result = await database.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${walletId}, 0))`;
+    const [state] = await sql<{ watermark_ordering_key: string | null; history_complete: boolean; evaluation_generation: number }[]>`select watermark_ordering_key,history_complete,evaluation_generation from wallet_behavior_state where wallet_id=${walletId} for update`;
+    if (!state) return { evaluated:0, anomalies:0, notificationIds:[] as string[] };
+    const actions = await sql<ActionRow[]>`select a.*,wt.slot,wt.signature,wt.finality,t.mint,exists(select 1 from wallet_behavior_observations o where o.action_id=a.id) behavior_observed from wallet_economic_actions a join wallet_transactions wt on wt.id=a.transaction_id left join tokens t on t.id=a.token_id where a.wallet_id=${walletId} and wt.finality='finalized' order by a.occurred_at,wt.slot,wt.signature,a.action_index`;
+    let evaluated=0, anomalyCount=0, watermark=state.watermark_ordering_key; const notificationIds:string[]=[];
+    let generation=state.evaluation_generation;
+    const existingWatermark=watermark;
+    const late=existingWatermark===null?undefined:actions.find((candidate)=>orderingKey(candidate)<=existingWatermark && !candidateBehaviorWasObserved(candidate));
+    if(late){
+      const dirty=orderingKey(late); generation+=1;
+      metrics?.increment("anomaly_repair_total",{reason:"late_finalized_action"});
+      await sql`update wallet_behavior_state set dirty_from_ordering_key=${dirty},evaluation_generation=${generation},updated_at=now() where wallet_id=${walletId}`;
+      await sql`update wallet_anomalies a set superseded_at=${now},supersession_reason='LATE_FINALIZED_ACTION_REPAIR' from wallet_economic_actions e join wallet_transactions wt on wt.id=e.transaction_id where a.action_id=e.id and a.wallet_id=${walletId} and a.superseded_at is null and (wt.occurred_at::text||'|'||lpad(wt.slot::text,20,'0')||'|'||wt.signature||'|'||lpad(e.action_index::text,3,'0'))>=${dirty}`;
+      await sql`update wallet_behavior_incidents set status='SUPERSEDED',updated_at=now() where wallet_id=${walletId} and status='OPEN' and latest_ordering_key>=${dirty}`;
+      await sql`delete from wallet_behavior_observations where wallet_id=${walletId} and source_type='LIVE_ECONOMIC_ACTION' and ordering_key>=${dirty}`;
+      const previous=actions.filter((candidate)=>orderingKey(candidate)<dirty).at(-1); watermark=previous?orderingKey(previous):null;
+      await sql`update wallet_behavior_state set watermark_ordering_key=${watermark} where wallet_id=${walletId}`;
+    }
+    for (const action of actions) {
+      const key=orderingKey(action); if (watermark!==null && key<=watermark) continue;
+      const observations=await observationsForAction(sql,action,walletId);
+      const facts: Fact[]=[];
+      for(const observation of observations){const fact=await evaluateObservation(sql,walletId,action,key,observation,policy,now,state.history_complete,generation);if(fact)facts.push(fact);}
+      for(const fact of facts){const [inserted]=await sql<{id:string}[]>`insert into wallet_anomalies(wallet_id,transaction_id,action_id,baseline_id,feature_kind,family,observed,percentile_lower_bps,percentile_upper_bps,baseline_quality,severity_contribution,rule_id,evidence,methodology_version,evaluation_generation,evaluated_at) values(${walletId},${action.transaction_id},${action.id},${fact.baselineId},${fact.feature},${fact.family},${sql.json(fact.observed)},${fact.lower},${fact.upper},${fact.quality},${fact.tier},${fact.ruleId},${sql.json(fact.evidence)},${BEHAVIOR_POLICY_VERSION},${generation},${now}) on conflict do nothing returning id`;if(inserted){anomalyCount+=1;metrics?.increment("anomalies_detected_total",{kind:fact.feature,severity:fact.tier});}}
+      for(const observation of observations) await insertObservation(sql,walletId,action,key,observation);
+      if(facts.length>0){const notification=await correlateIncident(sql,walletId,action,key,facts,policy,now,generation);if(notification)notificationIds.push(notification);}
+      await rebuildBaselines(sql,walletId,policy,now,key,generation); watermark=key; evaluated+=1;
+      await sql`update wallet_behavior_state set watermark_ordering_key=${key},dirty_from_ordering_key=null,updated_at=now() where wallet_id=${walletId}`;
+    }
+    return {evaluated,anomalies:anomalyCount,notificationIds};
+  });
+  metrics?.increment("anomaly_evaluations_total",{outcome:"completed"},result.evaluated); metrics?.observe("anomaly_evaluation_duration_ms",performance.now()-started);
+  return result;
+}
+
+interface ActionRow { id:string; wallet_id:string; transaction_id:string; action_index:number; action:string; token_id:string|null; raw_token_amount:string|null; token_decimals:number|null; consideration_mint:string|null; consideration_raw_amount:string|null; consideration_decimals:number|null; position_impact_numerator:string|null; position_impact_denominator:string|null; confidence:string; occurred_at:Date; native_destination:string|null; native_pre_balance_lamports:string|null; native_post_balance_lamports:string|null; native_transfer_lamports:string|null; slot:bigint; signature:string; finality:string; mint:string|null; behavior_observed?:boolean; }
+const candidateBehaviorWasObserved=(action:ActionRow)=>action.behavior_observed===true;
+interface Fact {feature:BehaviorFeatureKind;family:AnomalyFamily;tier:AnomalySeverity;quality:BaselineQuality;baselineId:string;lower:number|null;upper:number|null;ruleId:string;observed:Record<string,EvidenceValue>;evidence:Record<string,EvidenceValue>}
+
+async function observationsForAction(sql:TxSql,action:ActionRow,walletId:string):Promise<Observation[]>{
+  const out:Observation[]=[]; const sol="So11111111111111111111111111111111111111112";
+  const slot=action.slot.toString();
+  if(action.action==="BUY"&&action.consideration_raw_amount&&action.consideration_decimals!==null){
+    if(action.consideration_mint===sol){const value=new Decimal(action.consideration_raw_amount).div(new Decimal(10).pow(action.consideration_decimals)).toFixed();out.push({featureKind:"POSITION_SIZE_SOL",family:"SIZE",numericValue:value,unit:"SOL",evidence:{action:action.action},tokenId:action.token_id});}
+    else{const [trade]=await sql<{estimated_usd_value:string|null}[]>`select estimated_usd_value::text from wallet_trades where transaction_id=${action.transaction_id} and token_id=${action.token_id} and side='BUY' order by occurred_at,id limit 1`;if(trade?.estimated_usd_value)out.push({featureKind:"POSITION_SIZE_USD",family:"SIZE",numericValue:trade.estimated_usd_value,unit:"USD",evidence:{action:action.action,source:"PHASE2_ESTIMATED_USD_VALUE"},tokenId:action.token_id});}
+  }
+  if((action.action==="PARTIAL_EXIT"||action.action==="FULL_EXIT")&&action.position_impact_numerator&&action.position_impact_denominator&&BigInt(action.position_impact_denominator)>0n){out.push({featureKind:"EXIT_FRACTION",family:"EXIT",numericValue:(BigInt(action.position_impact_numerator)*10000n/BigInt(action.position_impact_denominator)).toString(),unit:"BPS",evidence:{action:action.action},tokenId:action.token_id});const [hold]=await sql<{seconds:string|null}[]>`select (sum(r.holding_seconds::numeric*r.raw_amount)/nullif(sum(r.raw_amount),0))::text seconds from wallet_realizations r join wallet_trades t on t.id=r.sell_trade_id where t.transaction_id=${action.transaction_id}`;if(hold?.seconds)out.push({featureKind:"HOLDING_DURATION",family:"DURATION",numericValue:hold.seconds,unit:"SECONDS",evidence:{basis:"FIFO_AMOUNT_WEIGHTED"},tokenId:action.token_id});}
+  if(action.action==="TRANSFER_OUT"&&action.native_transfer_lamports){out.push({featureKind:"NATIVE_TRANSFER_SIZE",family:"TRANSFER",numericValue:new Decimal(action.native_transfer_lamports).div(1e9).toFixed(),unit:"SOL",evidence:{destinationAvailable:action.native_destination!==null}});if(action.native_pre_balance_lamports&&BigInt(action.native_pre_balance_lamports)>0n)out.push({featureKind:"NATIVE_BALANCE_FRACTION",family:"TRANSFER",numericValue:(BigInt(action.native_transfer_lamports)*10000n/BigInt(action.native_pre_balance_lamports)).toString(),unit:"BPS",evidence:{preBalanceLamports:action.native_pre_balance_lamports,postBalanceLamports:action.native_post_balance_lamports}});if(action.native_destination)out.push({featureKind:"TRANSFER_DESTINATION_NOVELTY",family:"TRANSFER",categoricalValue:action.native_destination,unit:"CATEGORY",evidence:{destination:action.native_destination}});}
+  const [frequency]=await sql<{five:number;hour:number}[]>`select count(*) filter(where a.occurred_at>=${new Date(action.occurred_at.getTime()-300000)})::int five,count(*) filter(where a.occurred_at>=${new Date(action.occurred_at.getTime()-3600000)})::int hour from wallet_economic_actions a join wallet_transactions wt on wt.id=a.transaction_id where a.wallet_id=${walletId} and (a.occurred_at,wt.slot,wt.signature,a.action_index)<(${action.occurred_at},${slot}::bigint,${action.signature},${action.action_index})`;out.push({featureKind:"ACTION_FREQUENCY_5M",family:"FREQUENCY",numericValue:String((frequency?.five??0)+1),unit:"COUNT",evidence:{windowSeconds:300}},{featureKind:"ACTION_FREQUENCY_1H",family:"FREQUENCY",numericValue:String((frequency?.hour??0)+1),unit:"COUNT",evidence:{windowSeconds:3600}});
+  const prior=await sql<{action:string;occurred_at:Date}[]>`select a.action,a.occurred_at from wallet_economic_actions a join wallet_transactions wt on wt.id=a.transaction_id where a.wallet_id=${walletId} and (a.occurred_at,wt.slot,wt.signature,a.action_index)<(${action.occurred_at},${slot}::bigint,${action.signature},${action.action_index}) order by a.occurred_at desc,wt.slot desc,wt.signature desc,a.action_index desc limit 3`;const sequence=[...prior.reverse().map(x=>({action:x.action,occurredAt:x.occurred_at})),{action:action.action,occurredAt:action.occurred_at}];for(const length of [2,3,4] as const){const gram=actionNgrams(sequence,length).at(-1);if(gram)out.push({featureKind:"ACTION_SEQUENCE",family:"SEQUENCE",categoricalValue:gram,unit:`NGRAM_${String(length)}`,evidence:{length}});}
+  return out;
+}
+
+async function evaluateObservation(sql:TxSql,walletId:string,action:ActionRow,key:string,observation:Observation,policy:BehaviorPolicy,now:Date,historyComplete:boolean,generation:number):Promise<Fact|null>{
+  const [baseline]=await sql<{id:string;quality:BaselineQuality;observation_count:number}[]>`select id,quality,observation_count from wallet_behavior_baselines where wallet_id=${walletId} and feature_kind=${observation.featureKind} and cohort=${`${observation.unit}:LONG`} and methodology_version=${BEHAVIOR_POLICY_VERSION} and evaluation_generation<=${generation} and through_ordering_key<${key} order by evaluation_generation desc,generated_at desc,id desc limit 1`;if(!baseline||baseline.quality==="INSUFFICIENT"||!historyComplete)return null;
+  if(observation.numericValue!==undefined){const values=(await sql<{value:string}[]>`select numeric_value::text value from wallet_behavior_observations where wallet_id=${walletId} and feature_kind=${observation.featureKind} and unit=${observation.unit} and numeric_value is not null and ordering_key<${key} and occurred_at>=${new Date(now.getTime()-policy.longTermDays*86400000)} order by ordering_key desc limit ${policy.maxObservations}`).map(x=>x.value);const percentile=empiricalPercentile(observation.numericValue,values);if(!percentile)return null;const low=percentile.upperBps,high=percentile.lowerBps;let tier:AnomalySeverity|null=null,rule="";if((low<=50||high>=9950)&&values.length>=200){tier="EXTREME";rule="NUMERIC_TAIL_V1_EXTREME";}else if(low<=200||high>=9800){tier="UNUSUAL";rule="NUMERIC_TAIL_V1_UNUSUAL";}else if(low<=500||high>=9500){tier="NOTABLE";rule="NUMERIC_TAIL_V1_NOTABLE";}if(!tier)return null;return{feature:observation.featureKind,family:observation.family,tier,quality:baseline.quality,baselineId:baseline.id,lower:percentile.lowerBps,upper:percentile.upperBps,ruleId:rule,observed:{value:observation.numericValue,unit:observation.unit},evidence:observation.evidence};}
+  const length=observation.featureKind==="ACTION_SEQUENCE"?Number(observation.unit.replace("NGRAM_","")):null;const required=length===2?100:length===3?150:length===4?200:20;const [counts]=await sql<{total:number;matching:number}[]>`select count(*)::int total,count(*) filter(where categorical_value=${observation.categoricalValue??""})::int matching from wallet_behavior_observations where wallet_id=${walletId} and feature_kind=${observation.featureKind} and unit=${observation.unit} and categorical_value is not null and ordering_key<${key}`;const total=counts?.total??0;if(total<required)return null;const frequency=Math.floor((counts?.matching??0)*10000/(total||1));const tier:AnomalySeverity=frequency===0&&total>=200?"UNUSUAL":"NOTABLE";if(frequency>500)return null;return{feature:observation.featureKind,family:observation.family,tier,quality:baseline.quality,baselineId:baseline.id,lower:null,upper:null,ruleId:`${frequency===0?"CATEGORY_V1_UNSEEN":"CATEGORY_V1_RARE"}_${observation.unit}`,observed:{value:observation.categoricalValue??null,frequencyBps:frequency,opportunities:total},evidence:observation.evidence};
+}
+
+async function insertObservation(sql:TxSql,walletId:string,action:ActionRow,key:string,o:Observation){await sql`insert into wallet_behavior_observations(wallet_id,transaction_id,action_id,token_id,source_type,source_id,feature_kind,family,numeric_value,categorical_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline) values(${walletId},${action.transaction_id},${action.id},${o.tokenId??null},'LIVE_ECONOMIC_ACTION',${`${action.id}:${o.unit}`},${o.featureKind},${o.family},${o.numericValue??null},${o.categoricalValue??null},${o.unit},${action.occurred_at},${key},${action.confidence},${BEHAVIOR_POLICY_VERSION},${sql.json(o.evidence)},true) on conflict do nothing`;}
+
+async function correlateIncident(sql:TxSql,walletId:string,action:ActionRow,key:string,facts:Fact[],policy:BehaviorPolicy,now:Date,generation:number):Promise<string|null>{
+  const derived=deriveIncidentSeverity(facts.map(f=>({family:f.family,tier:f.tier,baselineQuality:f.quality})));
+  if(!derived.severity)return null;
+  const [prior]=await sql<{action:string;token_id:string|null}[]>`select a.action,a.token_id from wallet_economic_actions a join wallet_transactions wt on wt.id=a.transaction_id where a.wallet_id=${walletId} and (a.occurred_at,wt.slot,wt.signature,a.action_index)<(${action.occurred_at},${action.slot.toString()}::bigint,${action.signature},${action.action_index}) order by a.occurred_at desc,wt.slot desc,wt.signature desc,a.action_index desc limit 1`;
+  const transitionRelated=(prior?.action==="FULL_EXIT"&&action.action==="ACCOUNT_CLOSE")||(prior?.action==="ACCOUNT_CLOSE"&&action.action==="TRANSFER_OUT");
+  const [candidate]=await sql<{id:string;severity:AnomalySeverity;revision:number;families:string[];rule_ids:string[];anchor_token_id:string|null}[]>`select i.id,i.severity,i.revision,i.families,i.rule_ids,a.token_id anchor_token_id from wallet_behavior_incidents i join wallet_economic_actions a on a.id=i.anchor_action_id where i.wallet_id=${walletId} and i.status='OPEN' and i.evaluation_generation=${generation} and i.latest_at>=${new Date(action.occurred_at.getTime()-policy.incidentWindowMinutes*60000)} order by i.latest_at desc limit 1`;
+  const existing=candidate&&((candidate.anchor_token_id!==null&&candidate.anchor_token_id===action.token_id)||transitionRelated)?candidate:undefined;
+  let incidentId:string;
+  let revision:number;
+  let incidentSeverity:AnomalySeverity=derived.severity;
+  const severityRank:Record<AnomalySeverity,number>={NOTABLE:1,UNUSUAL:2,EXTREME:3};
+  if(existing){
+    const families=[...new Set([...existing.families,...derived.families])];
+    const materiallyNew=families.length>existing.families.length;
+    const compoundNotable=existing.severity==="NOTABLE"&&derived.severity==="NOTABLE"&&families.length>=2;
+    const nextSeverity=compoundNotable?"UNUSUAL":derived.severity;
+    const escalated=severityRank[nextSeverity]>severityRank[existing.severity];
+    revision=existing.revision+(materiallyNew||escalated?1:0);
+    incidentId=existing.id;
+    const severity=escalated?nextSeverity:existing.severity;
+    incidentSeverity=severity;
+    const rules=[...new Set([...existing.rule_ids,...derived.ruleIds,...(compoundNotable?["SEVERITY_V1_TWO_INDEPENDENT_NOTABLE_FAMILIES"]:[])])];
+    await sql`update wallet_behavior_incidents set latest_ordering_key=${key},latest_at=${action.occurred_at},severity=${severity},revision=${revision},rule_ids=${sql.json(rules)},families=${sql.json(families)},updated_at=now() where id=${incidentId}`;
+  }else{
+    revision=1;
+    const [created]=await sql<{id:string}[]>`insert into wallet_behavior_incidents(wallet_id,anchor_action_id,first_ordering_key,latest_ordering_key,opened_at,latest_at,severity,revision,rule_ids,families,baseline_quality,methodology_version,evaluation_generation) values(${walletId},${action.id},${key},${key},${action.occurred_at},${action.occurred_at},${derived.severity},1,${sql.json(derived.ruleIds)},${sql.json(derived.families)},${facts.map(f=>f.quality).sort().at(-1)??"LOW"},${BEHAVIOR_POLICY_VERSION},${generation}) returning id`;
+    if(!created)return null;
+    incidentId=created.id;
+  }
+  await sql`update wallet_anomalies set incident_id=${incidentId} where action_id=${action.id} and methodology_version=${BEHAVIOR_POLICY_VERSION}`;
+  if(incidentSeverity==="NOTABLE")return null;
+  const payload={incidentId,revision,severity:incidentSeverity,walletId,action:action.action,occurredAt:action.occurred_at.toISOString(),facts:facts.map(f=>({feature:f.feature,tier:f.tier,quality:f.quality,observed:f.observed,ruleId:f.ruleId})),ruleIds:[...derived.ruleIds]};
+  const [notification]=await sql<{id:string}[]>`insert into wallet_anomaly_notifications(incident_id,revision,provider,destination_key,payload) values(${incidentId},${revision},'telegram','default',${sql.json(payload)}) on conflict do nothing returning id`;
+  return notification?.id??null;
+}
+
+export async function deliverBehaviorNotifications(database:Database,notifier:NotificationProvider|undefined,walletId:string):Promise<number>{if(!notifier)return 0;const rows=await database.sql<{id:string;incident_id:string;revision:number;payload:Record<string,unknown>}[]>`select n.id,n.incident_id,n.revision,n.payload from wallet_anomaly_notifications n join wallet_behavior_incidents i on i.id=n.incident_id where i.wallet_id=${walletId} and n.status in ('PENDING','RETRYING') and n.next_attempt_at<=now() order by n.created_at limit 20`;let delivered=0;for(const row of rows){try{const p=row.payload;const result=await notifier.deliver({deduplicationKey:`behavior:${row.incident_id}:${String(row.revision)}:default`,severity:p["severity"]==="EXTREME"?"CRITICAL":"HIGH",text:formatBehaviorMessage(p)});await database.sql`update wallet_anomaly_notifications set status='DELIVERED',external_id=${result.externalId},delivered_at=now(),attempt_count=attempt_count+1,last_error_code=null where id=${row.id}`;delivered+=1;}catch{await database.sql`update wallet_anomaly_notifications set status='RETRYING',attempt_count=attempt_count+1,last_error_code='DELIVERY_FAILED',next_attempt_at=now()+interval '5 minutes' where id=${row.id}`;}}return delivered;}
+function formatBehaviorMessage(payload:Record<string,unknown>):string {
+  const facts=Array.isArray(payload["facts"])?payload["facts"] as Record<string,unknown>[]:[];
+  const rules=Array.isArray(payload["ruleIds"])?payload["ruleIds"] as string[]:[];
+  return [`${String(payload["severity"])} WALLET BEHAVIOR`,`Wallet: ${String(payload["walletId"]).slice(0,8)}...`,"",...facts.map((fact)=>`- ${String(fact["feature"]).replaceAll("_"," ")}: ${JSON.stringify(fact["observed"])} (${String(fact["quality"])} baseline)`),"",`Evidence rules: ${rules.join(", ")}`,"Observed deviation only; no motive or trading recommendation is inferred."].join("\n");
+}
+// eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-unnecessary-condition
+function behaviorMessage(payload:Record<string,unknown>):string{const facts=Array.isArray(payload["facts"])?payload["facts"] as Record<string,unknown>[]:[];return[`${payload["severity"]==="EXTREME"?"🚨":"⚠️"} ${String(payload["severity"])} WALLET BEHAVIOR`,`Wallet: ${String(payload["walletId"]).slice(0,8)}…`,"",...facts.map(f=>`• ${String(f["feature"]).replaceAll("_"," ")}: ${JSON.stringify(f["observed"])} (${String(f["quality"])} baseline)`),"",`Evidence rules: ${(payload["ruleIds"] as string[]??[]).join(", ")}`,"Observed deviation only; no motive or trading recommendation is inferred."].join("\n");}
