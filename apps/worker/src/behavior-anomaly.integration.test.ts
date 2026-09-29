@@ -1,7 +1,10 @@
 import { afterAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { schema } from "@swi/db";
 import { createTestDatabase, requireDatabase } from "@swi/db/testing";
+import { FIFO_ACCOUNTING_METHODOLOGY_VERSION, holdingDurationSemanticSourceId } from "@swi/domain";
 import { behaviorOrderingKey, buildHistoricalBehaviorBaseline, evaluateWalletBehavior, repairHistoricalBehaviorOrderingKeys } from "./behavior-anomaly.js";
+import { rebuildWalletAccounting } from "./wallet-accounting.js";
 
 const context = await createTestDatabase();
 afterAll(async () => context?.dispose());
@@ -10,6 +13,59 @@ const POLICY = { recentDays: 30, longTermDays: 180, maxObservations: 2_000, inci
 const NOW = new Date("2026-09-29T15:22:59.353Z");
 
 describe.skipIf(!context)("behavior baseline PostgreSQL integration", () => {
+  it("keeps FIFO semantic provenance stable across UUID churn and reconciles stale history atomically", async () => {
+    const database = requireDatabase(context);
+    const [wallet] = await database.query.insert(schema.trackedWallets).values({ address: "BehaviorFifoWallet11111111111111111111111111" }).returning();
+    const [token] = await database.query.insert(schema.tokens).values({ mint: "BehaviorFifoMint111111111111111111111111111", decimals: 0 }).returning();
+    const [event] = await database.query.insert(schema.providerEvents).values({ provider: "test", externalEventId: "behavior-fifo", payloadHash: "fifo-hash", eventType: "HISTORICAL_TRANSACTION", status: "PROCESSED", payloadSummary: {} }).returning();
+    if (!wallet || !token || !event) throw new Error("FIFO_FIXTURE_SETUP_FAILED");
+    await database.query.insert(schema.walletIngestionRuns).values({ walletId: wallet.id, idempotencyKey: `fifo:${wallet.id}`, status: "COMPLETED" });
+    const acquiredAt = new Date("2026-08-01T00:00:00.000Z");
+    const soldAt = new Date("2026-08-02T00:00:00.000Z");
+    const addTransaction = async (signature:string,slot:bigint,occurredAt:Date) => {
+      const [row] = await database.query.insert(schema.walletTransactions).values({ walletId:wallet.id,providerEventId:event.id,signature,instructionIndex:0,kind:"SWAP",slot,occurredAt,finality:"finalized",succeeded:true,normalizedPayload:{} }).returning();
+      if(!row)throw new Error("FIFO_TRANSACTION_SETUP_FAILED"); return row;
+    };
+    const buyA=await addTransaction("fifo-buy-a",1n,acquiredAt),buyB=await addTransaction("fifo-buy-b",2n,acquiredAt),sell=await addTransaction("fifo-sell",3n,soldAt);
+    const trade = async (transactionId:string,side:"BUY"|"SELL",raw:string,usd:string) => {
+      const [row]=await database.query.insert(schema.walletTrades).values({walletId:wallet.id,transactionId,tokenId:token.id,side,rawTokenAmount:raw,tokenDecimals:0,estimatedUsdValue:usd,feeUsd:"0",pricingStatus:"PRICED",pricingState:"PRICED_FROM_STABLECOIN_FLOW",valuationBasis:"EXACT",pricingConfidenceBps:10000,quality:"HIGH",occurredAt:side==="SELL"?soldAt:acquiredAt}).returning();
+      if(!row)throw new Error("FIFO_TRADE_SETUP_FAILED"); return row;
+    };
+    const firstBuy=await trade(buyA.id,"BUY","100","1"),secondBuy=await trade(buyB.id,"BUY","200","2"),sellTrade=await trade(sell.id,"SELL","300","3");
+    const prices={name:"unused",granularitySeconds:60,supports:()=>false,getPrices:()=>Promise.resolve([])};
+    await rebuildWalletAccounting({database,prices},wallet.id,NOW);
+    const firstPhysical=await database.sql<{realization_id:string;lot_id:string;source_trade_id:string;raw_amount:string}[]>`select r.id realization_id,r.lot_id,l.source_trade_id,r.raw_amount::text raw_amount from wallet_realizations r join wallet_inventory_lots l on l.id=r.lot_id where r.wallet_id=${wallet.id} order by l.source_trade_id`;
+    expect(firstPhysical).toHaveLength(2);
+    await buildHistoricalBehaviorBaseline(database,wallet.id,POLICY,NOW);
+    const firstObservations=await database.sql<{source_id:string;ordering_key:string;sell_trade_id:string;acquisition_trade_id:string;realized_raw_amount:string}[]>`select source_id,ordering_key,sell_trade_id,acquisition_trade_id,realized_raw_amount::text from wallet_behavior_observations where wallet_id=${wallet.id} and feature_kind='HOLDING_DURATION' order by source_id`;
+    expect(firstObservations).toHaveLength(2);
+    expect(new Set(firstObservations.map(x=>x.ordering_key)).size).toBe(1);
+    expect(firstObservations.map(x=>x.source_id)).toEqual([firstBuy,secondBuy].map(x=>holdingDurationSemanticSourceId({walletId:wallet.id,tokenId:token.id,sellTradeId:sellTrade.id,acquisitionTradeId:x.id,realizedRawAmount:x.id===firstBuy.id?"100":"200",accountingMethodologyVersion:FIFO_ACCOUNTING_METHODOLOGY_VERSION})).sort());
+
+    await rebuildWalletAccounting({database,prices},wallet.id,NOW);
+    const secondPhysical=await database.sql<{realization_id:string;lot_id:string}[]>`select r.id realization_id,r.lot_id from wallet_realizations r where r.wallet_id=${wallet.id} order by r.id`;
+    expect(new Set(secondPhysical.map(x=>x.realization_id))).not.toEqual(new Set(firstPhysical.map(x=>x.realization_id)));
+    expect(new Set(secondPhysical.map(x=>x.lot_id))).not.toEqual(new Set(firstPhysical.map(x=>x.lot_id)));
+    expect((await buildHistoricalBehaviorBaseline(database,wallet.id,POLICY,NOW)).observations).toBe(0);
+    const stable=await database.sql<{source_id:string}[]>`select source_id from wallet_behavior_observations where wallet_id=${wallet.id} and feature_kind='HOLDING_DURATION' order by source_id`;
+    expect(stable.map(x=>x.source_id)).toEqual(firstObservations.map(x=>x.source_id));
+
+    await database.query.update(schema.walletTrades).set({rawTokenAmount:"100",estimatedUsdValue:"1"}).where(eq(schema.walletTrades.id,sellTrade.id));
+    await rebuildWalletAccounting({database,prices},wallet.id,NOW);
+    await database.sql.unsafe("create function fail_fifo_reconciliation_for_test() returns trigger language plpgsql as $$ begin if new.history_status = 'COMPLETED' then raise exception 'SIMULATED_FIFO_RECONCILIATION_FAILURE'; end if; return new; end $$");
+    await database.sql.unsafe("create trigger fail_fifo_reconciliation_for_test before update on wallet_behavior_state for each row execute function fail_fifo_reconciliation_for_test()");
+    await expect(buildHistoricalBehaviorBaseline(database,wallet.id,POLICY,NOW)).rejects.toThrow("SIMULATED_FIFO_RECONCILIATION_FAILURE");
+    expect((await database.sql<{count:number}[]>`select count(*)::int count from wallet_behavior_observations where wallet_id=${wallet.id} and feature_kind='HOLDING_DURATION'`)[0]?.count).toBe(2);
+    await database.sql.unsafe("drop trigger fail_fifo_reconciliation_for_test on wallet_behavior_state");
+    await database.sql.unsafe("drop function fail_fifo_reconciliation_for_test()");
+    await buildHistoricalBehaviorBaseline(database,wallet.id,POLICY,NOW);
+    expect((await database.sql<{count:number}[]>`select count(*)::int count from wallet_behavior_observations where wallet_id=${wallet.id} and feature_kind='HOLDING_DURATION'`)[0]?.count).toBe(1);
+    expect((await database.sql<{observation_count:number}[]>`select observation_count from wallet_behavior_baselines where wallet_id=${wallet.id} and feature_kind='HOLDING_DURATION' order by cohort`).map(x=>x.observation_count)).toEqual([1]);
+    expect((await database.sql<{count:number}[]>`select count(*)::int count from wallet_behavior_observations where wallet_id=${wallet.id} and feature_kind='POSITION_SIZE_USD'`)[0]?.count).toBe(2);
+    const [safety]=await database.sql<{anomalies:number;incidents:number;notifications:number}[]>`select (select count(*)::int from wallet_anomalies where wallet_id=${wallet.id}) anomalies,(select count(*)::int from wallet_behavior_incidents where wallet_id=${wallet.id}) incidents,(select count(*)::int from wallet_anomaly_notifications n join wallet_behavior_incidents i on i.id=n.incident_id where i.wallet_id=${wallet.id}) notifications`;
+    expect(safety).toEqual({anomalies:0,incidents:0,notifications:0});
+  });
+
   it("persists real snapshots, reports actual inserts, stays idempotent, and never creates alerts", async () => {
     const database = requireDatabase(context);
     const [wallet] = await database.query.insert(schema.trackedWallets).values({ address: "BehaviorIntegrationWallet111111111111111111111" }).returning();

@@ -8,6 +8,30 @@ export const behaviorPolicy = {
 } as const;
 
 export const behaviorFeatureKinds = ["POSITION_SIZE_SOL", "POSITION_SIZE_USD", "HOLDING_DURATION", "EXIT_FRACTION", "EXITS_PER_POSITION", "ENTRY_TO_FIRST_EXIT", "FIRST_EXIT_TO_FULL_EXIT", "ACTION_FREQUENCY_5M", "ACTION_FREQUENCY_1H", "TOKEN_TRANSFER_SIZE", "NATIVE_TRANSFER_SIZE", "NATIVE_BALANCE_FRACTION", "TRANSFER_DESTINATION_NOVELTY", "VENUE_NOVELTY", "ROUTE_COMPLEXITY", "ACTION_SEQUENCE"] as const;
+
+/** FIFO methodology and canonical provenance-key encoding for historical holding durations. */
+export const FIFO_ACCOUNTING_METHODOLOGY_VERSION = "fifo-v1";
+export const HOLDING_DURATION_SOURCE_TYPE = "PHASE2_FIFO_REALIZATION";
+
+/**
+ * Canonical field order: version, wallet UUID, token UUID, sell-trade UUID,
+ * acquisition-trade UUID, exact realized base-unit integer. UUIDs have a fixed
+ * ASCII representation and the quantity is normalized through BigInt, so the
+ * result is independent of insertion order, locale, timezone and row UUIDs.
+ */
+export function holdingDurationSemanticSourceId(input: {
+  readonly walletId: string;
+  readonly tokenId: string;
+  readonly sellTradeId: string;
+  readonly acquisitionTradeId: string;
+  readonly realizedRawAmount: bigint | string;
+  readonly accountingMethodologyVersion?: string;
+}): string {
+  const version = input.accountingMethodologyVersion ?? FIFO_ACCOUNTING_METHODOLOGY_VERSION;
+  const raw = BigInt(input.realizedRawAmount).toString();
+  if (BigInt(raw) <= 0n) throw new RangeError("REALIZED_RAW_AMOUNT_MUST_BE_POSITIVE");
+  return `${version}|wallet=${input.walletId}|token=${input.tokenId}|sell=${input.sellTradeId}|acquisition=${input.acquisitionTradeId}|raw=${raw}`;
+}
 export type BehaviorFeatureKind = (typeof behaviorFeatureKinds)[number];
 export type BaselineQuality = "INSUFFICIENT" | "LOW" | "MEDIUM" | "HIGH";
 export type AnomalySeverity = "NOTABLE" | "UNUSUAL" | "EXTREME";

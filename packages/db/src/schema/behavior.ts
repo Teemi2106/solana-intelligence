@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { boolean, check, index, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { createdAt, id } from "./common";
-import { tokens, walletEconomicActions, walletTransactions } from "./chain";
+import { createdAt, id, rawAmount } from "./common";
+import { tokens, walletEconomicActions, walletTrades, walletTransactions } from "./chain";
 import { trackedWallets } from "./wallets";
 
 export const walletBehaviorObservations = pgTable("wallet_behavior_observations", {
@@ -9,6 +9,8 @@ export const walletBehaviorObservations = pgTable("wallet_behavior_observations"
   transactionId: uuid("transaction_id").references(() => walletTransactions.id, { onDelete: "cascade" }),
   actionId: uuid("action_id").references(() => walletEconomicActions.id, { onDelete: "cascade" }), tokenId: uuid("token_id").references(() => tokens.id),
   sourceType: text("source_type").notNull(), sourceId: text("source_id").notNull(), featureKind: text("feature_kind").notNull(), family: text("family").notNull(),
+  sellTradeId: uuid("sell_trade_id").references(() => walletTrades.id), acquisitionTradeId: uuid("acquisition_trade_id").references(() => walletTrades.id),
+  realizedRawAmount: rawAmount("realized_raw_amount"), accountingMethodologyVersion: text("accounting_methodology_version"),
   numericValue: numeric("numeric_value", { precision: 78, scale: 18 }), categoricalValue: text("categorical_value"), unit: text("unit").notNull(),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(), orderingKey: text("ordering_key").notNull(), quality: text("quality").notNull(),
   methodologyVersion: text("methodology_version").notNull(), evidence: jsonb("evidence").$type<Record<string, unknown>>().default({}).notNull(), includedInBaseline: boolean("included_in_baseline").default(true).notNull(), createdAt: createdAt(),
@@ -16,6 +18,7 @@ export const walletBehaviorObservations = pgTable("wallet_behavior_observations"
   uniqueIndex("wallet_behavior_observation_identity_uq").on(table.sourceType, table.sourceId, table.featureKind, table.methodologyVersion),
   index("wallet_behavior_observation_feature_time_idx").on(table.walletId, table.featureKind, table.occurredAt),
   index("wallet_behavior_observation_order_idx").on(table.walletId, table.orderingKey),
+  index("wallet_behavior_observation_realization_idx").on(table.walletId, table.featureKind, table.accountingMethodologyVersion, table.sellTradeId),
   check("wallet_behavior_observation_one_value", sql`(${table.numericValue} is null) <> (${table.categoricalValue} is null)`),
 ]);
 

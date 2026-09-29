@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { actionNgrams, baselineQuality, deriveIncidentSeverity, empiricalPercentile, numericStatistics } from "./behavior-anomaly";
+import { actionNgrams, baselineQuality, deriveIncidentSeverity, empiricalPercentile, holdingDurationSemanticSourceId, numericStatistics } from "./behavior-anomaly";
 
 describe("behavior anomaly policy", () => {
+  it("encodes FIFO realization provenance canonically without floating point", () => {
+    const input = { walletId: "wallet", tokenId: "token", sellTradeId: "sell", acquisitionTradeId: "buy", realizedRawAmount: "000123" };
+    expect(holdingDurationSemanticSourceId(input)).toBe("fifo-v1|wallet=wallet|token=token|sell=sell|acquisition=buy|raw=123");
+    expect(holdingDurationSemanticSourceId({ ...input, realizedRawAmount: 123n })).toBe(holdingDurationSemanticSourceId(input));
+    expect(() => holdingDurationSemanticSourceId({ ...input, realizedRawAmount: "0" })).toThrow("REALIZED_RAW_AMOUNT_MUST_BE_POSITIVE");
+  });
+
   it("computes deterministic decimal-safe robust statistics, including zero MAD", () => {
     expect(numericStatistics(["0.1", "0.2", "0.3", "1000000000000000000.4"])).toEqual({
       count: 4, minimum: "0.1", q1: "0.175", median: "0.25", q3: "250000000000000000.325", maximum: "1000000000000000000.4", mad: "0.1",
