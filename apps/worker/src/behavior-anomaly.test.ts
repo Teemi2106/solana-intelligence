@@ -13,19 +13,21 @@ function baselineDatabase(options: { failBaseline?: boolean } = {}) {
       calls.push({ text, parameters });
       if (text.includes("select exists(select 1 from wallet_ingestion_runs")) return Promise.resolve([{ complete: true }]);
       if (text.includes("select count(*)::int count")) return Promise.resolve([{ count: 0 }]);
-      if (text.includes("select wt.occurred_at::text")) return Promise.resolve([{ ordering_key: "2026-09-01 00:00:00+00|00000000000000000001|sig|000" }]);
+      if (text.includes("ordering_key from wallet_economic_actions")) return Promise.resolve([{ ordering_key: "2026-09-01T00:00:00.000Z|00000000000000000001|sig|000" }]);
+      if (text.includes("count(*)::int included")) return Promise.resolve([{ included: 1, within_window: 1 }]);
       if (text.includes("select feature_kind,unit,numeric_value::text")) return Promise.resolve([{
         feature_kind: "POSITION_SIZE_SOL", unit: "SOL", numeric_value: "1.25", categorical_value: null,
         occurred_at: new Date("2026-09-01T00:00:00.000Z"),
       }]);
       if (text.includes("select history_complete from wallet_behavior_state")) return Promise.resolve([{ history_complete: true }]);
       if (text.includes("insert into wallet_behavior_baselines") && options.failBaseline === true) return Promise.reject(new Error("SIMULATED_BASELINE_FAILURE"));
+      if (text.includes("insert into wallet_behavior_baselines")) return Promise.resolve([{ id: "baseline-id" }]);
       return Promise.resolve([]);
     },
     { json: (value: unknown) => value },
   );
   const sql = Object.assign(transaction, {
-    begin: async (work: (tx: typeof transaction) => Promise<unknown>) => {
+    begin: async (_options: string, work: (tx: typeof transaction) => Promise<unknown>) => {
       try {
         const result = await work(transaction);
         committed = true;

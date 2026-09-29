@@ -360,7 +360,7 @@ const analysisWorker = new Worker(
           const payload = behaviorBaselineBuildJob.parse(job.data);
           const policy = { recentDays: config.BEHAVIOR_RECENT_WINDOW_DAYS, longTermDays: config.BEHAVIOR_LONG_TERM_WINDOW_DAYS, maxObservations: config.BEHAVIOR_MAX_OBSERVATIONS, incidentWindowMinutes: config.BEHAVIOR_INCIDENT_WINDOW_MINUTES };
           const result = await withTimeout(buildHistoricalBehaviorBaseline(database, payload.walletId, policy), 300_000, "BEHAVIOR_BASELINE");
-          logger.info({ walletId: payload.walletId, ...result }, "wallet behavior baseline built");
+          logger.info({ walletId: payload.walletId, observations: result.observations, baselines: result.baselines, baselineDiagnostics: result.diagnostics }, "wallet behavior baseline built");
           return;
         }
         default:
