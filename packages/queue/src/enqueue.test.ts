@@ -7,7 +7,7 @@ const at = new Date("2026-09-25T12:00:04Z");
 
 describe("deterministic job ids", () => {
   it("never contain a colon (BullMQ rejects it) and are stable for the same entity", () => {
-    const ids = [jobIds.normalizeLiveEvent(id), jobIds.walletRecompute(id, "full", at), jobIds.finalityCheck(signature, 2), jobIds.gapBackfill(id, at), jobIds.reconcile(at), jobIds.scheduledReconcile(at), jobIds.sweep(at), jobIds.gapScan(at), jobIds.tokenLaunch(id, at), jobIds.behaviorEvaluate(id, at), jobIds.behaviorBaselineBuild(id, at)];
+    const ids = [jobIds.normalizeLiveEvent(id), jobIds.walletRecompute(id, "full", at), jobIds.finalityCheck(signature, 2), jobIds.gapBackfill(id, at), jobIds.reconcile(at), jobIds.scheduledReconcile(at), jobIds.sweep(at), jobIds.gapScan(at), jobIds.tokenLaunch(id, at), jobIds.behaviorEvaluate(id, "SHADOW", at), jobIds.behaviorBaselineBuild(id, at)];
     for (const value of ids) expect(value).not.toContain(":");
     expect(jobIds.normalizeLiveEvent(id)).toBe(jobIds.normalizeLiveEvent(id));
     expect(jobIds.finalityCheck(signature, 2)).toBe(jobIds.finalityCheck(signature, 2));
@@ -23,6 +23,7 @@ describe("deterministic job ids", () => {
   it("keeps price-only and full recomputes, and different attempts, distinct", () => {
     expect(jobIds.walletRecompute(id, "full", at)).not.toBe(jobIds.walletRecompute(id, "price-only", at));
     expect(jobIds.finalityCheck(signature, 1)).not.toBe(jobIds.finalityCheck(signature, 2));
+    expect(jobIds.behaviorEvaluate(id, "SHADOW", at)).not.toBe(jobIds.behaviorEvaluate(id, "ALERT", at));
   });
 });
 
@@ -56,9 +57,9 @@ describe("enqueue helpers", () => {
 
   it("coalesces live behavior evaluation and makes baseline build per-wallet idempotent", async () => {
     const add = vi.fn().mockResolvedValue({});
-    await enqueueBehaviorEvaluation({ analysis: { add } as never }, id, at);
+    await enqueueBehaviorEvaluation({ analysis: { add } as never }, id, "SHADOW", at);
     await enqueueBehaviorBaselineBuild({ analysis: { add } as never }, id, at);
-    expect(add).toHaveBeenNthCalledWith(1, "behavior-evaluate", { walletId: id }, expect.objectContaining({ jobId: jobIds.behaviorEvaluate(id, at), attempts: 4 }));
+    expect(add).toHaveBeenNthCalledWith(1, "behavior-evaluate", { walletId: id, mode: "SHADOW" }, expect.objectContaining({ jobId: jobIds.behaviorEvaluate(id, "SHADOW", at), attempts: 4 }));
     expect(add).toHaveBeenNthCalledWith(2, "behavior-baseline-build", { walletId: id }, expect.objectContaining({ jobId: jobIds.behaviorBaselineBuild(id, at), attempts: 3 }));
   });
 });

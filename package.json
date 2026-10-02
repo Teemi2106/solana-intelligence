@@ -32,6 +32,7 @@
     "wallet:diagnose": "node scripts/diagnose-wallet.mjs",
     "wallet:reprocess": "node scripts/run-with-env.mjs wallet-reprocess",
     "behavior:baseline": "node scripts/run-with-env.mjs behavior-baseline",
+    "behavior:shadow-report": "node scripts/run-with-env.mjs behavior-shadow-report",
     "telegram:test": "npm run build --workspace @swi/worker && node scripts/run-with-env.mjs telegram-test",
     "check": "npm run lint && npm run typecheck && npm test"
   },

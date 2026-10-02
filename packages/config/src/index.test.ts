@@ -80,11 +80,17 @@ describe("parseConfig", () => {
       TOKEN_METADATA_FRESHNESS_HOURS: 24,
       TOKEN_AUTHORITIES_FRESHNESS_HOURS: 6,
       ENABLE_BEHAVIOR_ANOMALIES: false,
+      ENABLE_BEHAVIOR_SHADOW_EVALUATION: false,
       BEHAVIOR_RECENT_WINDOW_DAYS: 30,
       BEHAVIOR_LONG_TERM_WINDOW_DAYS: 180,
       BEHAVIOR_MAX_OBSERVATIONS: 2000,
       BEHAVIOR_INCIDENT_WINDOW_MINUTES: 30,
     });
     expect(() => parseConfig({ ...valid, ENABLE_TOKEN_INTELLIGENCE: "true" })).toThrow(/HELIUS_API_KEY/);
+  });
+
+  it("separates internal behavior evaluation from user-facing anomaly alerting", () => {
+    expect(parseConfig({ ...valid, ENABLE_BEHAVIOR_SHADOW_EVALUATION: "true", ENABLE_BEHAVIOR_ANOMALIES: "false" }))
+      .toMatchObject({ ENABLE_BEHAVIOR_SHADOW_EVALUATION: true, ENABLE_BEHAVIOR_ANOMALIES: false });
   });
 });

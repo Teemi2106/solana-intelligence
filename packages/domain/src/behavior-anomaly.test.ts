@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionNgrams, baselineQuality, deriveIncidentSeverity, empiricalPercentile, holdingDurationSemanticSourceId, numericStatistics } from "./behavior-anomaly";
+import { actionNgrams, baselineQuality, classifyCategoricalDeviation, classifyNumericDeviation, deriveIncidentSeverity, empiricalPercentile, holdingDurationSemanticSourceId, numericStatistics, selectBehaviorEvaluationMode } from "./behavior-anomaly";
 
 describe("behavior anomaly policy", () => {
   it("encodes FIFO realization provenance canonically without floating point", () => {
@@ -19,6 +19,26 @@ describe("behavior anomaly policy", () => {
   it("suppresses percentile claims below the minimum sample size", () => {
     expect(empiricalPercentile("100", Array.from({ length: 19 }, (_, index) => String(index)))).toBeNull();
     expect(empiricalPercentile("100", Array.from({ length: 20 }, (_, index) => String(index)))).toEqual({ lowerBps: 10_000, upperBps: 10_000 });
+  });
+
+  it("classifies both numeric tails deterministically and leaves ordinary or zero-variance values normal", () => {
+    expect(classifyNumericDeviation({ lowerBps: 0, upperBps: 0 }, 200)).toMatchObject({ severity: "EXTREME", direction: "LOW" });
+    expect(classifyNumericDeviation({ lowerBps: 10_000, upperBps: 10_000 }, 200)).toMatchObject({ severity: "EXTREME", direction: "HIGH" });
+    expect(classifyNumericDeviation({ lowerBps: 4_500, upperBps: 5_500 }, 200)).toBeNull();
+    expect(classifyNumericDeviation({ lowerBps: 0, upperBps: 10_000 }, 200)).toBeNull();
+  });
+
+  it("classifies unseen and rare categories only after minimum coverage", () => {
+    expect(classifyCategoricalDeviation(0, 19, 20, "CATEGORY")).toBeNull();
+    expect(classifyCategoricalDeviation(0, 200, 20, "CATEGORY")).toMatchObject({ severity: "UNUSUAL", direction: "UNSEEN" });
+    expect(classifyCategoricalDeviation(2, 100, 20, "CATEGORY")).toMatchObject({ severity: "NOTABLE", direction: "RARE" });
+    expect(classifyCategoricalDeviation(10, 100, 20, "CATEGORY")).toBeNull();
+  });
+
+  it("enables shadow evaluation independently while alert mode takes explicit precedence", () => {
+    expect(selectBehaviorEvaluationMode({ shadowEnabled: true, alertsEnabled: false })).toBe("SHADOW");
+    expect(selectBehaviorEvaluationMode({ shadowEnabled: false, alertsEnabled: false })).toBeNull();
+    expect(selectBehaviorEvaluationMode({ shadowEnabled: true, alertsEnabled: true })).toBe("ALERT");
   });
 
   it("applies history, count, coverage, and completeness quality gates", () => {

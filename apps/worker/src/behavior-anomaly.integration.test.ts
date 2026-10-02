@@ -188,4 +188,49 @@ describe.skipIf(!context)("behavior baseline PostgreSQL integration", () => {
     const collisionKeys = await database.sql<{ ordering_key: string }[]>`select ordering_key from wallet_behavior_observations where wallet_id=${collisionWallet.id} order by ordering_key`;
     expect(collisionKeys.map((row) => row.ordering_key)).toEqual(["old-key-0", "old-key-1"]);
   });
+
+  it("persists idempotent shadow evidence without incidents, notifications, or baseline drift", async () => {
+    const database = requireDatabase(context);
+    const [wallet] = await database.query.insert(schema.trackedWallets).values({ address: "BehaviorShadowWallet111111111111111111111111" }).returning();
+    const [token] = await database.query.insert(schema.tokens).values({ mint: "BehaviorShadowMint11111111111111111111111111", decimals: 6 }).returning();
+    const [event] = await database.query.insert(schema.providerEvents).values({ provider: "test", externalEventId: "behavior-shadow", payloadHash: "shadow-hash", eventType: "LIVE_TRANSACTION", status: "PROCESSED", payloadSummary: {} }).returning();
+    if (!wallet || !token || !event) throw new Error("SHADOW_FIXTURE_SETUP_FAILED");
+    const historicalAt = new Date("2026-09-01T00:00:00.000Z");
+    const [historicalTransaction] = await database.query.insert(schema.walletTransactions).values({ walletId: wallet.id, providerEventId: event.id, signature: "shadow-history", instructionIndex: 0, kind: "SWAP", slot: 100n, occurredAt: historicalAt, finality: "finalized", succeeded: true, normalizedPayload: {} }).returning();
+    if (!historicalTransaction) throw new Error("SHADOW_HISTORY_SETUP_FAILED");
+    const through = behaviorOrderingKey({ occurred_at: historicalAt, slot: 100n, signature: "shadow-history", action_index: 0 });
+    for (let index = 0; index < 20; index += 1) {
+      await database.sql`insert into wallet_behavior_observations(wallet_id,transaction_id,token_id,source_type,source_id,feature_kind,family,numeric_value,unit,occurred_at,ordering_key,quality,methodology_version,evidence,included_in_baseline) values(${wallet.id},${historicalTransaction.id},${token.id},'PHASE2_HISTORICAL_DERIVATION',${`shadow-history-${String(index)}`},'POSITION_SIZE_SOL','SIZE',${String(index + 1)},'SOL',${historicalAt.toISOString()}::timestamptz,${through},'HIGH','behavior-v1','{}'::jsonb,true)`;
+    }
+    const [baseline] = await database.sql<{id:string}[]>`insert into wallet_behavior_baselines(wallet_id,feature_kind,cohort,window_start,window_end,through_ordering_key,observation_count,coverage_days,quality,history_complete,completeness_bps,statistics,methodology_version,evaluation_generation,generated_at) values(${wallet.id},'POSITION_SIZE_SOL','SOL:LONG','2026-08-01T00:00:00Z','2026-09-02T00:00:00Z',${through},20,32,'LOW',true,10000,'{"kind":"NUMERIC","median":"10.5","mad":"5"}'::jsonb,'behavior-v1',1,'2026-09-02T00:00:00Z') returning id`;
+    if (!baseline) throw new Error("SHADOW_BASELINE_SETUP_FAILED");
+    await database.sql`insert into wallet_behavior_state(wallet_id,watermark_ordering_key,history_status,history_complete,evaluation_generation,methodology_version) values(${wallet.id},${through},'COMPLETED',true,1,'behavior-v1')`;
+    const liveAt = new Date("2026-09-03T00:00:00.000Z");
+    const [liveTransaction] = await database.query.insert(schema.walletTransactions).values({ walletId: wallet.id, providerEventId: event.id, signature: "shadow-live", instructionIndex: 0, kind: "SWAP", slot: 101n, occurredAt: liveAt, finality: "finalized", succeeded: true, normalizedPayload: {} }).returning();
+    if (!liveTransaction) throw new Error("SHADOW_LIVE_SETUP_FAILED");
+    await database.query.insert(schema.walletEconomicActions).values({ walletId: wallet.id, transactionId: liveTransaction.id, actionIndex: 0, action: "BUY", tokenId: token.id, rawTokenAmount: "1000000", tokenDecimals: 6, considerationMint: "So11111111111111111111111111111111111111112", considerationRawAmount: "100000000000", considerationDecimals: 9, confidence: "HIGH", evidence: [], providerType: "UNKNOWN", classificationVersion: "test", occurredAt: liveAt });
+
+    await database.sql.unsafe("create function fail_shadow_evaluation_for_test() returns trigger language plpgsql as $$ begin raise exception 'SIMULATED_SHADOW_FAILURE'; end $$");
+    await database.sql.unsafe("create trigger fail_shadow_evaluation_for_test before insert on wallet_behavior_shadow_evaluations for each row execute function fail_shadow_evaluation_for_test() ");
+    await expect(evaluateWalletBehavior(database, wallet.id, POLICY, undefined, NOW, "SHADOW")).rejects.toThrow("SIMULATED_SHADOW_FAILURE");
+    await database.sql.unsafe("drop trigger fail_shadow_evaluation_for_test on wallet_behavior_shadow_evaluations");
+    await database.sql.unsafe("drop function fail_shadow_evaluation_for_test()");
+    const [rolledBack] = await database.sql<{live_observations:number;shadow_evaluations:number;watermark:string}[]>`select (select count(*)::int from wallet_behavior_observations where wallet_id=${wallet.id} and source_type='LIVE_ECONOMIC_ACTION') live_observations,(select count(*)::int from wallet_behavior_shadow_evaluations where wallet_id=${wallet.id}) shadow_evaluations,(select watermark_ordering_key from wallet_behavior_state where wallet_id=${wallet.id}) watermark`;
+    expect(rolledBack).toEqual({ live_observations: 0, shadow_evaluations: 0, watermark: through });
+
+    const first = await evaluateWalletBehavior(database, wallet.id, POLICY, undefined, NOW, "SHADOW");
+    expect(first).toMatchObject({ evaluated: 1, anomalies: 1, notificationIds: [] });
+    const shadow = await database.sql<{feature_kind:string;status:string;is_anomaly:boolean;severity:string|null;direction:string|null;baseline_id:string|null}[]>`select feature_kind,status,is_anomaly,severity,direction,baseline_id from wallet_behavior_shadow_evaluations where wallet_id=${wallet.id} order by feature_kind`;
+    expect(shadow).toContainEqual({ feature_kind: "POSITION_SIZE_SOL", status: "EVALUATED", is_anomaly: true, severity: "UNUSUAL", direction: "HIGH", baseline_id: baseline.id });
+    expect(shadow.filter((row) => row.status === "NON_EVALUABLE").length).toBeGreaterThan(0);
+    await expect(database.sql`insert into wallet_behavior_shadow_evaluations(wallet_id,transaction_id,action_id,observation_id,baseline_id,feature_kind,family,status,reason_code,is_anomaly,severity,direction,deviation_bps,rule_id,group_key,evidence,methodology_version,baseline_methodology_version,evaluation_generation,evaluated_at) select wallet_id,transaction_id,action_id,observation_id,baseline_id,feature_kind,family,'NON_EVALUABLE','TEST',true,severity,direction,deviation_bps,rule_id,group_key,evidence,methodology_version,baseline_methodology_version,101,evaluated_at from wallet_behavior_shadow_evaluations where wallet_id=${wallet.id} and is_anomaly limit 1`).rejects.toThrow(/check constraint/);
+    await expect(database.sql`insert into wallet_behavior_shadow_evaluations(wallet_id,transaction_id,action_id,observation_id,baseline_id,feature_kind,family,status,reason_code,is_anomaly,severity,direction,deviation_bps,rule_id,group_key,evidence,methodology_version,baseline_methodology_version,evaluation_generation,evaluated_at) select wallet_id,transaction_id,action_id,observation_id,baseline_id,feature_kind,family,status,reason_code,is_anomaly,'INVALID',direction,deviation_bps,rule_id,group_key,evidence,methodology_version,baseline_methodology_version,102,evaluated_at from wallet_behavior_shadow_evaluations where wallet_id=${wallet.id} and is_anomaly limit 1`).rejects.toThrow(/check constraint/);
+    await expect(database.sql`insert into wallet_behavior_shadow_evaluations(wallet_id,transaction_id,action_id,observation_id,baseline_id,feature_kind,family,status,reason_code,is_anomaly,severity,direction,deviation_bps,rule_id,group_key,evidence,methodology_version,baseline_methodology_version,evaluation_generation,evaluated_at) select wallet_id,transaction_id,action_id,observation_id,baseline_id,feature_kind,family,status,reason_code,is_anomaly,severity,direction,10001,rule_id,group_key,evidence,methodology_version,baseline_methodology_version,103,evaluated_at from wallet_behavior_shadow_evaluations where wallet_id=${wallet.id} and is_anomaly limit 1`).rejects.toThrow(/check constraint/);
+    const [safety] = await database.sql<{anomalies:number;incidents:number;notifications:number;baselines:number}[]>`select (select count(*)::int from wallet_anomalies where wallet_id=${wallet.id}) anomalies,(select count(*)::int from wallet_behavior_incidents where wallet_id=${wallet.id}) incidents,(select count(*)::int from wallet_anomaly_notifications n join wallet_behavior_incidents i on i.id=n.incident_id where i.wallet_id=${wallet.id}) notifications,(select count(*)::int from wallet_behavior_baselines where wallet_id=${wallet.id}) baselines`;
+    expect(safety).toEqual({ anomalies: 0, incidents: 0, notifications: 0, baselines: 1 });
+    const second = await evaluateWalletBehavior(database, wallet.id, POLICY, undefined, NOW, "SHADOW");
+    expect(second).toMatchObject({ evaluated: 0, anomalies: 0, notificationIds: [] });
+    const [after] = await database.sql<{count:number}[]>`select count(*)::int count from wallet_behavior_shadow_evaluations where wallet_id=${wallet.id}`;
+    expect(after?.count).toBe(shadow.length);
+  });
 });

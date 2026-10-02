@@ -63,6 +63,7 @@ export async function recordJobFailure(
     typeof data["providerEventId"] === "string"
       ? data["providerEventId"]
       : null;
+  const walletId = typeof data["walletId"] === "string" ? data["walletId"] : null;
   await database.query
     .insert(schema.processingFailures)
     .values({
@@ -74,6 +75,7 @@ export async function recordJobFailure(
       safeContext: {
         jobName: job.name,
         ...(providerEventId ? { providerEventId } : {}),
+        ...(walletId ? { walletId } : {}),
       },
       attemptCount: job.attemptsMade,
     })

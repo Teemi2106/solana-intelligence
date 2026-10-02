@@ -63,6 +63,7 @@ import { createTelegramNotifier } from "./telegram-notifier.js";
 import { enrichTokenRequest, findDueTokenEnrichmentRequests } from "./token-intelligence.js";
 import { buildHistoricalBehaviorBaseline, deliverBehaviorNotifications, evaluateWalletBehavior } from "./behavior-anomaly.js";
 import { DexScreenerTokenPoolProvider } from "@swi/market-data";
+import { selectBehaviorEvaluationMode } from "@swi/domain";
 
 const config = parseConfig(process.env);
 const liveEnabled = config.ENABLE_LIVE_INGESTION;
@@ -173,7 +174,10 @@ const scheduler: LiveScheduler = {
     );
   },
   enrichTokenRequests: (requestIds) => config.ENABLE_TOKEN_INTELLIGENCE ? enqueueTokenIntelligence(queues, requestIds) : Promise.resolve(),
-  evaluateBehavior: (walletId) => config.ENABLE_BEHAVIOR_ANOMALIES ? enqueueBehaviorEvaluation(queues, walletId) : Promise.resolve(),
+  evaluateBehavior: (walletId) => {
+    const mode = selectBehaviorEvaluationMode({ shadowEnabled: config.ENABLE_BEHAVIOR_SHADOW_EVALUATION, alertsEnabled: config.ENABLE_BEHAVIOR_ANOMALIES });
+    return mode ? enqueueBehaviorEvaluation(queues, walletId, mode) : Promise.resolve();
+  },
 };
 const handlers: LiveHandlerDependencies = {
   database,
@@ -349,11 +353,26 @@ const analysisWorker = new Worker(
           return;
         }
         case "behavior-evaluate": {
-          const payload = behaviorEvaluateJob.parse(job.data);
+          const parsed = behaviorEvaluateJob.safeParse(job.data);
+          if (!parsed.success) throw new UnrecoverableError("INVALID_BEHAVIOR_EVALUATION_JOB");
+          const payload = parsed.data;
+          const enabled = payload.mode === "SHADOW" ? config.ENABLE_BEHAVIOR_SHADOW_EVALUATION : config.ENABLE_BEHAVIOR_ANOMALIES;
+          if (!enabled) {
+            metrics.increment("behavior_evaluations_total", { mode: payload.mode, outcome: "disabled" });
+            logger.info({ walletId: payload.walletId, mode: payload.mode, reason: "CAPABILITY_DISABLED" }, "behavior evaluation skipped");
+            return;
+          }
           const policy = { recentDays: config.BEHAVIOR_RECENT_WINDOW_DAYS, longTermDays: config.BEHAVIOR_LONG_TERM_WINDOW_DAYS, maxObservations: config.BEHAVIOR_MAX_OBSERVATIONS, incidentWindowMinutes: config.BEHAVIOR_INCIDENT_WINDOW_MINUTES };
-          const result = await withTimeout(evaluateWalletBehavior(database, payload.walletId, policy, metrics), 120_000, "BEHAVIOR_EVALUATE");
-          const delivered = await deliverBehaviorNotifications(database, liveNotifier, payload.walletId);
-          logger.info({ walletId: payload.walletId, ...result, delivered }, "wallet behavior evaluated");
+          logger.info({ walletId: payload.walletId, mode: payload.mode }, "behavior evaluation started");
+          try {
+            const result = await withTimeout(evaluateWalletBehavior(database, payload.walletId, policy, metrics, new Date(), payload.mode), 120_000, "BEHAVIOR_EVALUATE");
+            const delivered = payload.mode === "ALERT" ? await deliverBehaviorNotifications(database, liveNotifier, payload.walletId) : 0;
+            logger.info({ walletId: payload.walletId, mode: payload.mode, ...result, delivered }, "behavior evaluation completed");
+          } catch (error) {
+            metrics.increment("behavior_evaluations_total", { mode: payload.mode, outcome: "failed" });
+            logger.error({ walletId: payload.walletId, mode: payload.mode, ...errorDetails(error) }, "behavior evaluation failed");
+            throw error;
+          }
           return;
         }
         case "behavior-baseline-build": {

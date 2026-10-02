@@ -50,12 +50,12 @@ export const jobIds = {
   gapScan: (now: Date) => `gap-scan-${String(bucket(now, 60 * 60))}`,
   tokenLaunch: (walletId: string, now: Date) => `token-launch-${walletId}-${String(bucket(now, 300))}`,
   tokenIntelligence: (requestId: string, now: Date) => `token-intelligence-${requestId}-${String(bucket(now, 300))}`,
-  behaviorEvaluate: (walletId: string, now: Date) => `behavior-evaluate-${walletId}-${String(bucket(now, 10))}`,
+  behaviorEvaluate: (walletId: string, mode: "SHADOW" | "ALERT", now: Date) => `behavior-evaluate-${mode.toLowerCase()}-${walletId}-${String(bucket(now, 10))}`,
   behaviorBaselineBuild: (walletId: string, now: Date) => `behavior-baseline-${walletId}-${String(bucket(now, 600))}`,
 };
 
-export async function enqueueBehaviorEvaluation(queues: Pick<AppQueues, "analysis">, walletId: string, now = new Date()): Promise<void> {
-  await queues.analysis.add("behavior-evaluate", { walletId }, { jobId: jobIds.behaviorEvaluate(walletId, now), attempts: 4, backoff: { type: "exponential", delay: 5_000 } });
+export async function enqueueBehaviorEvaluation(queues: Pick<AppQueues, "analysis">, walletId: string, mode: "SHADOW" | "ALERT", now = new Date()): Promise<void> {
+  await queues.analysis.add("behavior-evaluate", { walletId, mode }, { jobId: jobIds.behaviorEvaluate(walletId, mode, now), attempts: 4, backoff: { type: "exponential", delay: 5_000 } });
 }
 
 export async function enqueueBehaviorBaselineBuild(queues: Pick<AppQueues, "analysis">, walletId: string, now = new Date()): Promise<void> {

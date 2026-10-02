@@ -54,6 +54,7 @@ const baseSchema = z.object({
   TOKEN_METADATA_FRESHNESS_HOURS: integerFromString(24).pipe(z.number().min(1).max(24 * 30)),
   TOKEN_AUTHORITIES_FRESHNESS_HOURS: integerFromString(6).pipe(z.number().min(1).max(24 * 30)),
   ENABLE_BEHAVIOR_ANOMALIES: booleanFromString,
+  ENABLE_BEHAVIOR_SHADOW_EVALUATION: booleanFromString,
   BEHAVIOR_RECENT_WINDOW_DAYS: integerFromString(30).pipe(z.number().min(7).max(90)),
   BEHAVIOR_LONG_TERM_WINDOW_DAYS: integerFromString(180).pipe(z.number().min(30).max(730)),
   BEHAVIOR_MAX_OBSERVATIONS: integerFromString(2_000).pipe(z.number().min(200).max(10_000)),

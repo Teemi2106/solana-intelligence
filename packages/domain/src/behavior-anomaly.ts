@@ -36,6 +36,22 @@ export type BehaviorFeatureKind = (typeof behaviorFeatureKinds)[number];
 export type BaselineQuality = "INSUFFICIENT" | "LOW" | "MEDIUM" | "HIGH";
 export type AnomalySeverity = "NOTABLE" | "UNUSUAL" | "EXTREME";
 export type AnomalyFamily = "SIZE" | "DURATION" | "EXIT" | "FREQUENCY" | "TRANSFER" | "VENUE_ROUTE" | "SEQUENCE";
+export type BehaviorDeviationDirection = "LOW" | "HIGH" | "RARE" | "UNSEEN";
+export type BehaviorEvaluationMode = "SHADOW" | "ALERT";
+
+export function selectBehaviorEvaluationMode(input: { readonly shadowEnabled: boolean; readonly alertsEnabled: boolean }): BehaviorEvaluationMode | null {
+  if (input.alertsEnabled) return "ALERT";
+  if (input.shadowEnabled) return "SHADOW";
+  return null;
+}
+
+export interface BehaviorDeviation {
+  readonly severity: AnomalySeverity;
+  readonly direction: BehaviorDeviationDirection;
+  readonly ruleId: string;
+  /** Distance into the relevant tail, in basis points. Higher means more unusual. */
+  readonly deviationBps: number;
+}
 
 export interface NumericStatistics {
   readonly count: number;
@@ -78,6 +94,32 @@ export function empiricalPercentile(value: string, values: readonly string[]): {
     else if (comparison === 0) equal += 1;
   }
   return { lowerBps: Math.floor(below * 10_000 / values.length), upperBps: Math.floor((below + equal) * 10_000 / values.length) };
+}
+
+/** behavior-v1 numeric tail thresholds, kept separate so shadow and alert evaluation cannot drift. */
+export function classifyNumericDeviation(percentile: { lowerBps: number; upperBps: number }, sampleCount: number): BehaviorDeviation | null {
+  const lowTail = percentile.upperBps;
+  const highTail = percentile.lowerBps;
+  const direction = lowTail <= 5_000 ? "LOW" as const : "HIGH" as const;
+  const tail = direction === "LOW" ? lowTail : 10_000 - highTail;
+  if (tail <= 50 && sampleCount >= 200) return { severity: "EXTREME", direction, ruleId: "NUMERIC_TAIL_V1_EXTREME", deviationBps: 10_000 - tail };
+  if (tail <= 200) return { severity: "UNUSUAL", direction, ruleId: "NUMERIC_TAIL_V1_UNUSUAL", deviationBps: 10_000 - tail };
+  if (tail <= 500) return { severity: "NOTABLE", direction, ruleId: "NUMERIC_TAIL_V1_NOTABLE", deviationBps: 10_000 - tail };
+  return null;
+}
+
+/** behavior-v1 categorical rarity thresholds. `required` is feature-specific coverage. */
+export function classifyCategoricalDeviation(matching: number, total: number, required: number, unit: string): BehaviorDeviation | null {
+  if (total < required) return null;
+  const frequencyBps = Math.floor(matching * 10_000 / total);
+  if (frequencyBps > 500) return null;
+  const unseen = matching === 0;
+  return {
+    severity: unseen && total >= 200 ? "UNUSUAL" : "NOTABLE",
+    direction: unseen ? "UNSEEN" : "RARE",
+    ruleId: `${unseen ? "CATEGORY_V1_UNSEEN" : "CATEGORY_V1_RARE"}_${unit}`,
+    deviationBps: 10_000 - frequencyBps,
+  };
 }
 
 export function baselineQuality(input: { count: number; coverageDays: number; historyComplete: boolean; completenessBps?: number }): BaselineQuality {
