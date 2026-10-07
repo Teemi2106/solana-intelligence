@@ -6,7 +6,11 @@ import { WalletManager } from "./wallet-manager";
 export const dynamic = "force-dynamic";
 
 export default async function WalletsPage() {
-  const wallets = (await listTrackedWallets(getDatabase())).filter((wallet) => wallet.status !== "ARCHIVED");
+  const trackedWallets = await listTrackedWallets(getDatabase());
+  const wallets = trackedWallets.filter(
+    (wallet): wallet is (typeof trackedWallets)[number] & { status: "ACTIVE" | "PAUSED" } =>
+      wallet.status !== "ARCHIVED",
+  );
   return <section className="grid gap-6">
     <header>
       <p className="font-mono text-xs uppercase tracking-widest text-[var(--accent)]">Wallet intelligence</p>
