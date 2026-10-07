@@ -25,6 +25,30 @@ export async function setTrackedWalletStatus(database: Database, input: { wallet
   });
 }
 
+export async function updateTrackedWallet(database: Database, input: { walletId: string; displayName: string | null; labels: readonly string[]; actorId: string; requestId: string }) {
+  return database.query.transaction(async (transaction) => {
+    const [before] = await transaction.select().from(trackedWallets).where(eq(trackedWallets.id, input.walletId)).limit(1);
+    if (!before) return null;
+    const previousLabels = await transaction.select().from(walletLabels).where(eq(walletLabels.walletId, input.walletId));
+    const [updated] = await transaction.update(trackedWallets).set({ displayName: input.displayName, updatedAt: new Date() }).where(eq(trackedWallets.id, input.walletId)).returning();
+    await transaction.delete(walletLabels).where(and(eq(walletLabels.walletId, input.walletId), eq(walletLabels.source, "OPERATOR")));
+    if (input.labels.length > 0) await transaction.insert(walletLabels).values(input.labels.map((label) => ({ walletId: input.walletId, label, source: "OPERATOR" }))).onConflictDoNothing();
+    await transaction.insert(auditLogs).values({ actorId: input.actorId, action: "wallet.update", targetType: "tracked_wallet", targetId: input.walletId, requestId: input.requestId, before: { displayName: before.displayName, labels: previousLabels.filter((label) => label.source === "OPERATOR").map((label) => label.label) }, after: { displayName: input.displayName, labels: input.labels } });
+    return updated ?? null;
+  });
+}
+
+export async function setTrackedWalletStatuses(database: Database, input: { walletIds: readonly string[]; status: WalletStatus; actorId: string; requestId: string }) {
+  if (input.walletIds.length === 0) return [];
+  return database.query.transaction(async (transaction) => {
+    const before = await transaction.select().from(trackedWallets).where(inArray(trackedWallets.id, input.walletIds));
+    if (before.length === 0) return [];
+    const updated = await transaction.update(trackedWallets).set({ status: input.status, updatedAt: new Date() }).where(inArray(trackedWallets.id, before.map((wallet) => wallet.id))).returning();
+    await transaction.insert(auditLogs).values(before.map((wallet) => ({ actorId: input.actorId, action: "wallet.status.update", targetType: "tracked_wallet", targetId: wallet.id, requestId: input.requestId, before: { status: wallet.status }, after: { status: input.status } })));
+    return updated;
+  });
+}
+
 export async function startWalletIngestion(database: Database, walletId: string, idempotencyKey: string) {
   const [created] = await database.query.insert(walletIngestionRuns).values({ walletId, idempotencyKey }).onConflictDoNothing({ target: walletIngestionRuns.idempotencyKey }).returning();
   return created ?? (await database.query.select().from(walletIngestionRuns).where(eq(walletIngestionRuns.idempotencyKey, idempotencyKey)).limit(1))[0] ?? null;
